@@ -516,6 +516,9 @@
   .bolditem .txt{font:13px/1.5 system-ui;color:#eaeef3;word-break:break-word}
   .bolditem select{background:#0f1522;color:#eaeef3;border:1px solid #2a2f3a;border-radius:8px;padding:6px 8px}
   .bold-actions{display:flex;gap:8px;margin-top:8px}
+  #${ID} .md-hint{font:12px/1.4 system-ui;color:#9aa6b2;margin-top:-4px;margin-bottom:6px}
+  #${ID} #${ID}-md{width:100%;min-height:160px;background:#12151c;color:#eaeef3;border:1px solid #2a2f3a;border-radius:10px;padding:10px 12px;font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+
   @keyframes nppePulse {0%{box-shadow:0 0 0 0 rgba(42,109,245,.65)}70%{box-shadow:0 0 0 10px rgba(42,109,245,0)}100%{box-shadow:0 0 0 0 rgba(42,109,245,0)}}
   .nppe-pulse{animation:nppePulse 1.2s ease-out 1; outline:2px solid #2a6df5; outline-offset:2px; border-radius:8px}
   `;
@@ -535,6 +538,20 @@
           <div>
             <label><b>.docx (opcional):</b></label>
             <input id="${ID}-docx" type="file" accept=".docx">
+          </div>
+        <div>
+<label><b>Markdown (opcional):</b></label>
+<div class="md-hint">Cole aqui seu conteúdo em Markdown. Em <i>Analisar</i>, ele será convertido e enviado ao Editor.</div>
+<textarea id="${ID}-md" placeholder="# Título
+
+Intro (H3):
+Texto...
+
+**Negrito** e _itálico_, listas:
+- item
+1. item
+
+[link](https://exemplo.com)"></textarea>
           </div>
           <div class="log" id="${ID}-log">Pronto…</div>
         </div>
@@ -560,7 +577,8 @@
 
           <details class="ed-wrap" id="${ID}-ed-wrap">
             <summary>Editor (opcional)</summary>
-            <div class="toolbar">$1</div>
+            <div class="toolbar">$1
+            <button type="button" data-act="md-to-editor" title="Converter Markdown para Editor">MD→Editor</button></div>
             <div id="${ID}-editor" class="editor" contenteditable="true" aria-label="Editor (tipo CK)"></div>
           </details>
 
@@ -650,6 +668,7 @@
   const $ = sel => wrap.querySelector(sel);
   const $model = $(`#${ID}-model`);
   const $docx = $(`#${ID}-docx`);
+  const $md   = $(`#${ID}-md`);
   const $log = $(`#${ID}-log`);
   const $ed  = $(`#${ID}-editor`);
   const $h1  = $(`#${ID}-h1`);
@@ -743,6 +762,126 @@
     return txt.trim().split(/\r?\n\r?\n+/).map(p=>`<p>${esc(p).replace(/(https?:\/\/\S+)/g,'<a href="$1">$1<\/a>')}</p>`).join('');
   };
   const htmlFromClipboardOrText = (input) => (/(<p|<h\d|<ul|<ol|<li|<strong|<em|<a|<br)/i.test(input) ? input : plainToHTML(input));
+  // ===== Markdown → HTML (parser leve, focado no escopo editorial) =====
+  const markdownToHTML = (md) => {
+    if (!md || !md.trim()) return '';
+    const escHtml = (s) => s
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;');
+
+    // Normaliza quebra de linha
+    md = md.replace(/\r\n?/g, '\n');
+
+    // Blocos por linhas
+    const lines = md.split('\n');
+
+    // Acumuladores
+    let out = [];
+    let buf = [];
+    let listMode = null; // 'ul' | 'ol'
+
+    const flushPara = () => {
+      if (!buf.length) return;
+      const text = buf.join(' ').trim();
+      if (text) out.push(`<p>${text}</p>`);
+      buf = [];
+    };
+    const flushList = () => {
+      if (!listMode) return;
+      out.push(`</${listMode}>`);
+      listMode = null;
+    };
+
+    const emitListItem = (html, isOrdered) => {
+      if (!listMode) {
+        listMode = isOrdered ? 'ol' : 'ul';
+        out.push(`<${listMode}>`);
+      } else if ((isOrdered && listMode!=='ol') || (!isOrdered && listMode!=='ul')) {
+        // troca de tipo de lista
+        flushList();
+        listMode = isOrdered ? 'ol' : 'ul';
+        out.push(`<${listMode}>`);
+      }
+      out.push(`<li>${html}</li>`);
+    };
+
+    const inline = (s) => {
+   // Padrão específico: (texto ancora)[https://url]
+   s = s.replace(/\(([^)]+)\)\s*\[\s*(https?:\/\/[^\]\s]+)\s*\]/g,
+     (m, t, u) => `<a href="${u}">${esc(t)}</a>`);
+      // [texto](url)
+      s = s.replace(/\[([^\]]+)\]\(\s*(https?:\/\/[^\s)]+)\s*\)/g, (m, t, u) => `<a href="${u}">${esc(t)}</a>`);
+      // [texto]: url
+      s = s.replace(/\[([^\]]+)\]\s*[:：]\s*(https?:\/\/\S+)/g, (m, t, u) => `<a href="${u}">${esc(t)}</a>`);
+      // ...PALAVRA [https://url]  → ancora a PALAVRA anterior (ou **bold**/**_itálico_** anterior)
+      s = s.replace(/((?:<strong>[^<]+<\/strong>|<em>[^<]+<\/em>|[^\s<][^<\s]*))\s*\[\s*(https?:\/\/[^\]\s]+)\s*\]/g,
+        (m, txt, u) => `<a href="${u}">${txt}</a>`);
+      // Autolink simples [https://...] (fallback)
+      s = s.replace(/\[(https?:\/\/[^\s\]]+)\]/g, (m, u) => `<a href="${u}">${u}</a>`);
+      // Bold **x** ou __x__
+      s = s.replace(/(\*\*|__)(.+?)\1/g, '<strong>$2</strong>');
+      // Italic *x* ou _x_
+      s = s.replace(/(^|[^\*])\*(?!\s)(.+?)(?<!\s)\*(?!\*)/g, '$1<em>$2</em>');
+      s = s.replace(/(^|[^_])_(?!\s)(.+?)(?<!\s)_(?!_)/g, '$1<em>$2</em>');
+      return s;
+    };
+    const esc = (s) => s; // já escapamos seletivamente
+
+    for (let i=0;i<lines.length;i++){
+      let line = lines[i];
+
+      // Ignora cercas de code block (não suportamos <pre> no sanitizer atual)
+      if (/^\s*```/.test(line)) { continue; }
+
+      // Heading ATX: ###, ##, #
+      let m;
+      if (m = line.match(/^\s*#{3}\s+(.+)$/)) {
+        flushPara(); flushList();
+        out.push(`<h3>${inline(escHtml(m[1].trim()))}</h3>`);
+        continue;
+      }
+      if (m = line.match(/^\s*#{2}\s+(.+)$/)) {
+        flushPara(); flushList();
+        out.push(`<h2>${inline(escHtml(m[1].trim()))}</h2>`);
+        continue;
+      }
+      if (m = line.match(/^\s*#\s+(.+)$/)) {
+        flushPara(); flushList();
+        out.push(`<h1>${inline(escHtml(m[1].trim()))}</h1>`);
+        continue;
+      }
+
+      // Lista ordenada: 1. item
+      if (m = line.match(/^\s*(\d+)[.)]\s+(.+)$/)) {
+        flushPara();
+        emitListItem(inline(escHtml(m[2].trim())), true);
+        continue;
+      }
+
+      // Lista não ordenada: -, *, +
+      if (m = line.match(/^\s*[-*+]\s+(.+)$/)) {
+        flushPara();
+        emitListItem(inline(escHtml(m[1].trim())), false);
+        continue;
+      }
+
+      // Linha em branco → quebra de parágrafo/lista
+      if (!line.trim()) {
+        flushPara(); flushList();
+        continue;
+      }
+
+      // Texto contínuo → acumula para <p>
+      buf.push(inline(escHtml(line.trim())));
+    }
+
+    flushPara(); flushList();
+
+    // Quebras duplas em <br>
+    const html = out.join('\n').replace(/ {2}\n/g, '<br>\n');
+    return sanitizeHTML(html);
+  };
 
   // === Helpers extra (remover aspas e detectar frase) ===
   const dequote = (s) => String(s||'')
@@ -1145,39 +1284,42 @@
     return clusters;
   };
 
-  const findBoldSentences = (rootHTML) => {
-    const tmp = document.createElement('div');
-    tmp.innerHTML = rootHTML || '';
-    const found = [];
-    const seenSentences = new Set();
+ const findBoldSentences = (rootHTML) => {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = rootHTML || '';
+  const found = [];
+  const seen = new Set();
 
-    tmp.querySelectorAll('p,li,h2,h3,h4').forEach(block => {
-      const full = norm(block.textContent || '');
-      if (!full) return;
+  // Ignora blocos “técnicos” (ex.: linhas de preview/expected)
+  const shouldSkip = (txt) =>
+    /expected\s+alt\s+text:/i.test(txt);
 
-      const clusters = collectBoldClusters(block);
-      clusters.forEach(c => {
-        let sentence = getSentenceAround(full, c.text) || c.text;
+  tmp.querySelectorAll('p,li,h2,h3,h4').forEach(block => {
+    const full = norm(block.textContent || '');
+    if (!full || shouldSkip(full)) return;
 
-        const words = sentence.split(/\s+/).filter(Boolean);
-        const isShort = words.length <= 5 || sentence.length <= 30;
-        if (isShort && !isUpperStart(sentence)) return;
+    const clusters = collectBoldClusters(block); // grupos de <strong>...> com separadores ok
+    clusters.forEach(c => {
+      const boldText = norm(c.text);
+      if (!boldText) return;
 
-        const key = block.outerHTML.length + '|' + norm(sentence);
-        if (seenSentences.has(key)) return;
-        seenSentences.add(key);
+      // dedupe por texto em bold (é o que exibiremos/convertiremos)
+      const key = boldText;
+      if (seen.has(key)) return;
+      seen.add(key);
 
-        found.push({
-          id: 'b' + Math.random().toString(36).slice(2, 8),
-          sentence,
-          bold: c.text,
-          level: 'keep'
-        });
+      found.push({
+        id: 'b' + Math.random().toString(36).slice(2, 8),
+        display: boldText, // o que aparece na lista
+        bold: boldText,    // o que usamos para localizar e converter
+        sentence: boldText, // mantemos compatível com o motor atual
+        level: 'keep'
       });
     });
+  });
 
-    return found;
-  };
+  return found;
+};
 
   const renderBoldList = () => {
     $boldList.innerHTML = '';
@@ -1187,15 +1329,16 @@
     }
     boldItems.forEach(item => {
       const row = document.createElement('div');
+      const lvl = item.level || 'keep';
       row.className = 'bolditem';
       row.innerHTML = `
-        <div class="txt">${item.sentence}</div>
+        <div class="txt">${item.display}</div>
         <div>
-          <select data-id="${item.id}">
-            <option value="keep"${item.level==='keep'?' selected':''}>Manter bold</option>
-            <option value="h2"${item.level==='h2'?' selected':''}>Transformar em H2</option>
-            <option value="h3"${item.level==='h3'?' selected':''}>Transformar em H3</option>
-            <option value="h4"${item.level==='h4'?' selected':''}>Transformar em H4</option>
+    <select data-id="${item.id}">
+        <option value="keep"${lvl==='keep'?' selected':''}>Manter bold</option>
+        <option value="h2"${lvl==='h2'?' selected':''}>Transformar em H2</option>
+      <option value="h3"${lvl==='h3'?' selected':''}>Transformar em H3</option>
+      <option value="h4"${lvl==='h4'?' selected':''}>Transformar em H4</option>
           </select>
         </div>
       `;
@@ -1210,7 +1353,8 @@
   };
 
   const buildHeadingFromRange = (startNode, endNode, level) => {
-    const hx = document.createElement(level.toUpperCase());
+   const tag = (level || 'h2').toUpperCase();
+   const hx = document.createElement(tag);
     const r = document.createRange();
     r.setStartBefore(startNode);
     r.setEndAfter(endNode);
@@ -1224,7 +1368,7 @@
   };
 
   const replaceClusterWithHeading = (block, startNode, endNode, level) => {
-    const hx = buildHeadingFromRange(startNode, endNode, level);
+    const hx = buildHeadingFromRange(startNode, endNode, level || 'h2');
 
     const rBefore = document.createRange();
     rBefore.setStart(block, 0);
@@ -1287,13 +1431,13 @@
   };
 
   const applyBoldConversions = () => {
-    const itemsToApply = Array.from(
-      new Map(
-        boldItems
-          .filter(i => i.level !== 'keep')
-          .map(i => [ norm(i.sentence), i ])
-      ).values()
-    );
+  const itemsToApply = Array.from(
+    new Map(
+      boldItems
+        .filter(i => (i.level || 'keep') !== 'keep') // trata undefined como 'keep'
+        .map(i => [ norm(i.sentence || i.bold || i.display || ''), i ])
+    ).values()
+  );
     if (!itemsToApply.length) { log('Nada para converter.'); return; }
 
     let total = 0;
@@ -1334,6 +1478,13 @@
     if (act==='sanitize'){
       $ed.innerHTML = sanitizeHTML($ed.innerHTML); return;
     }
+    if (act==='md-to-editor'){
+const md = ($md?.value || '').trim();
+if (!md) return;
+$ed.innerHTML = markdownToHTML(md);
+log('Markdown convertido e enviado ao Editor.');
+return;
+}
     if (act==='extract'){
       let parsed = extractByMarkers($ed.innerHTML);
       if (!parsed) parsed = parseArticle($ed.innerHTML);
@@ -1439,38 +1590,62 @@
     }catch(e){ console.error(e); log('Erro ao extrair:', e.message); }
   };
 
-  $(`#${ID}-analyze`).onclick = async () => {
-    try{
-      let html = $ed.innerHTML.trim();
-      const f = $docx.files?.[0];
-      if (f) { log('Lendo .docx…'); html = await getDocxHTML(f); $ed.innerHTML = html; }
+$(`#${ID}-analyze`).onclick = async () => {
+  try {
+    // Fonte padrão = conteúdo atual do Editor
+    let src = $ed.innerHTML.trim();
 
-      const parsed = parseArticle(html || $ed.innerHTML);
-      $ed.innerHTML = parsed.clean;
+    // Prioridade: .docx > Markdown > Editor
+    const f  = $docx.files?.[0];
+    const md = ($md?.value || '').trim();
 
-      $h1.innerText = parsed.h1 || '';
-      $metaPreview.innerHTML = `
-        <div><b>Meta title:</b> ${parsed.metaTitle||'—'}</div>
-        <div><b>Meta description:</b> ${parsed.metaDesc||'—'}</div>
-        <div><b>OG title:</b> ${parsed.ogTitle||'—'}</div>
-        <div><b>OG description:</b> ${parsed.ogDesc||'—'}</div>
-        <div><b>URL alias:</b> ${parsed.urlAlias||'—'}</div>
-      `;
+    if (f) {
+      log('Lendo .docx…');
+      src = await getDocxHTML(f);
+      $ed.innerHTML = src;
+    } else if (md) {
+      log('Convertendo Markdown…');
+      src = markdownToHTML(md);
+      $ed.innerHTML = src;
+    }
 
-      boldItems = findBoldSentences($ed.innerHTML);
-      renderBoldList();
+    const parsed = parseArticle(src || $ed.innerHTML);
+    $ed.innerHTML = parsed.clean;
 
-      applyHeading($intro, 'h3');
+    $h1.innerText = parsed.h1 || '';
+    $metaPreview.innerHTML = `
+      <div><b>Meta title:</b> ${parsed.metaTitle||'—'}</div>
+      <div><b>Meta description:</b> ${parsed.metaDesc||'—'}</div>
+      <div><b>OG title:</b> ${parsed.ogTitle||'—'}</div>
+      <div><b>OG description:</b> ${parsed.ogDesc||'—'}</div>
+      <div><b>URL alias:</b> ${parsed.urlAlias||'—'}</div>
+    `;
 
-      $log.textContent =
-        `✔ Sanitizado e analisado. Clique em "Extrair → Blocos" para popular os blocos.`+
-        `\nH1: "${parsed.h1||'—'}"`+
-        `\nMeta: title="${parsed.metaTitle||'—'}" / desc="${parsed.metaDesc||'—'}"`+
-        `\nOG: title="${parsed.ogTitle||parsed.metaTitle||'—'}" / desc="${parsed.ogDesc||parsed.metaDesc||'—'}"`+
-        `\nURL alias: ${parsed.urlAlias||'—'}`;
-      $log.dataset.meta = JSON.stringify({ h1:parsed.h1, metaTitle:parsed.metaTitle, metaDesc:parsed.metaDesc, ogTitle:parsed.ogTitle || parsed.metaTitle, ogDesc: parsed.ogDesc || parsed.metaDesc, urlAlias:parsed.urlAlias });
-    }catch(e){ console.error(e); log('Erro ao analisar:', e.message); }
-  };
+    boldItems = findBoldSentences($ed.innerHTML);
+    renderBoldList();
+
+    applyHeading($intro, 'h3');
+
+    $log.textContent =
+      `✔ Sanitizado e analisado. Clique em "Extrair → Blocos" para popular os blocos.`+
+      `\nH1: "${parsed.h1||'—'}"`+
+      `\nMeta: title="${parsed.metaTitle||'—'}" / desc="${parsed.metaDesc||'—'}"`+
+      `\nOG: title="${parsed.ogTitle||parsed.metaTitle||'—'}" / desc="${parsed.ogDesc||parsed.metaDesc||'—'}"`+
+      `\nURL alias: ${parsed.urlAlias||'—'}`;
+    $log.dataset.meta = JSON.stringify({
+      h1: parsed.h1,
+      metaTitle: parsed.metaTitle,
+      metaDesc: parsed.metaDesc,
+      ogTitle: parsed.ogTitle || parsed.metaTitle,
+      ogDesc: parsed.ogDesc || parsed.metaDesc,
+      urlAlias: parsed.urlAlias
+    });
+  } catch (e) {
+    console.error(e);
+    log('Erro ao analisar:', e.message);
+  }
+};
+
 
   $(`#${ID}-bold-apply`).onclick = () => {
     try{
