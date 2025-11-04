@@ -763,6 +763,27 @@ Texto...
   };
   const htmlFromClipboardOrText = (input) => (/(<p|<h\d|<ul|<ol|<li|<strong|<em|<a|<br)/i.test(input) ? input : plainToHTML(input));
   // ===== Markdown → HTML (parser leve, focado no escopo editorial) =====
+  
+  // ✅ Helper: capitaliza a 1ª letra "real" e garante ponto final
+const sentenceCase = (s) => {
+  s = String(s || '').trim();
+  if (!s) return s;
+
+  const m = s.match(/^([\(\[\{"'“‘]*)/);
+  const lead = m ? m[1] : '';
+  let rest = s.slice(lead.length);
+
+  // encontra a primeira letra (inclui acentuadas)
+  const idx = rest.search(/[A-Za-zÀ-ÖØ-öø-ÿ]/);
+  if (idx >= 0) {
+    rest = rest.slice(0, idx) + rest.charAt(idx).toUpperCase() + rest.slice(idx + 1);
+  }
+
+  let out = lead + rest;
+  if (!/[.!?…]$/.test(out)) out += '.';
+  return out;
+};
+  
   const markdownToHTML = (md) => {
     if (!md || !md.trim()) return '';
     const escHtml = (s) => s
@@ -857,14 +878,14 @@ Texto...
       // Lista ordenada: 1. item
       if (m = line.match(/^\s*(\d+)[.)]\s+(.+)$/)) {
         flushPara();
-        emitListItem(inline(escHtml(m[2].trim())), true);
+        emitListItem(inline(escHtml(sentenceCase(m[2].trim()))), true);
         continue;
       }
 
       // Lista não ordenada: -, *, +
       if (m = line.match(/^\s*[-*+]\s+(.+)$/)) {
         flushPara();
-        emitListItem(inline(escHtml(m[1].trim())), false);
+        emitListItem(inline(escHtml(sentenceCase(m[1].trim()))), false);
         continue;
       }
 
