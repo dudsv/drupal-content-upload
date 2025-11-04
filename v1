@@ -771,7 +771,9 @@ Texto...
       .replace(/>/g,'&gt;');
 
     // Normaliza quebra de linha
-    md = md.replace(/\r\n?/g, '\n');
+    md = md
+    .replace(/•\s*/g, '\n- ')
+    .replace(/\r\n?/g, '\n');
 
     // Blocos por linhas
     const lines = md.split('\n');
