@@ -8,10 +8,10 @@
 
 ## 🎯 Project Overview
 
-Enhanced the v1 automation script to support two different DOCX template formats for Drupal article creation:
+Enhanced the v1 automation script to support three different DOCX template formats for Drupal article creation:
 1. **Standard Format:** "How do I know if my cat is sick.docx"
 2. **Template Format:** "template.docx"
-
+3. **Advanced Template Format:** "template.docx"
 ---
 
 ## 📊 Work Completed - Summary
