@@ -1,0 +1,250 @@
+=== TEMPLATE.DOCX STRUCTURE ANALYSIS ===
+
+PARAGRAPH-BY-PARAGRAPH WITH STYLES:
+================================================================================
+
+[Para 000] [Style: Normal]
+Source: https://www.purina.fr/choisir-animal/articles/accueillir-chien/prenom/chien-petite-taille
+--------------------------------------------------------------------------------
+
+[Para 002] [Style: Heading 1]
+Les meilleurs prénoms de petits chiens pour votre nouvel animal de compagnie
+--------------------------------------------------------------------------------
+
+[Para 004] [Style: Normal]
+Article category: Noms de chien - https://www.purina.fr/choisir-animal/articles/accueillir-chien/prenom
+--------------------------------------------------------------------------------
+
+[Para 006] [Style: Normal]
+[COMPONENT: Contact Us Small]
+--------------------------------------------------------------------------------
+
+[Para 008] [Style: Normal]
+[COMPONENT: Text Block 1]
+--------------------------------------------------------------------------------
+
+[Para 009] [Style: Normal]
+Les petits chiens ont de nombreux atouts. Ils sont mignons, tiennent sur nos genoux, ils nous suivent partout et ont des personnalités amusantes. Si vous êtes l’heureux futur propriétaire d’un petit chien et que vous êtes à la recherche d’un prénom pour votre petit compagnon, voici quelques valeurs sûres.
+--------------------------------------------------------------------------------
+
+[Para 010] [Style: Normal]
+[COMPONENT: Text Block 2]
+--------------------------------------------------------------------------------
+
+[Para 011] [Style: Heading 2]
+Nos noms préférés pour les petits chiens
+--------------------------------------------------------------------------------
+
+[Para 012] [Style: Normal]
+[COMPONENT: Text Image 1]
+--------------------------------------------------------------------------------
+
+[Para 014] [Style: Heading 3]
+Rocky
+--------------------------------------------------------------------------------
+
+[Para 015] [Style: Normal]
+Un nom mignon et court comme votre nouveau chien. Votre tout petit compagnon portera alors un prénom agrémenté d’une bonne dose d’humour qui ne manquera pas d’évoquer également une référence drôle à « The Rock ».
+--------------------------------------------------------------------------------
+
+[Para 017] [Style: Normal]
+[COMPONENT: Text Block 3]
+--------------------------------------------------------------------------------
+
+[Para 018] [Style: Heading 3]
+Minnie
+--------------------------------------------------------------------------------
+
+[Para 019] [Style: Normal]
+Minnie est un nom particulièrement bien adapté aux petites demoiselles. Si vous êtes fan de Disney, ce nom vous fait sûrement penser à la douce Minnie Mouse, partenaire de toujours de Mickey. Quel choix parfait pour votre adorable amie à quatre pattes !
+--------------------------------------------------------------------------------
+
+[Para 020] [Style: Heading 3]
+Teddy
+--------------------------------------------------------------------------------
+
+[Para 021] [Style: Normal]
+Les petits chiens nous évoquent les choses les plus mignonnes de la vie. Si votre charmant nouveau chiot vous fait penser à la célèbre peluche Teddy Bear, vous pouvez le faire savoir haut et fort en choisissant Teddy comme prénom.
+--------------------------------------------------------------------------------
+
+[Para 022] [Style: Heading 3]
+Gribouille
+--------------------------------------------------------------------------------
+
+[Para 023] [Style: Normal]
+Les lutins sont les petites mains du Père Noël, réputés farceurs et malicieux – une description qui correspond parfaitement à certains de nos compagnons à poils. Gribouille est l’un d’entre eux, mais il en existe d’autres. Si vous êtes à la recherche d’un prénom de chien qui correspondrait tout à fait à votre petit compagnon facétieux, voici une bonne idée !
+--------------------------------------------------------------------------------
+
+[Para 024] [Style: Heading 3]
+Lily
+--------------------------------------------------------------------------------
+
+[Para 025] [Style: Normal]
+Lilliput est cette île imaginaire peuplée de minuscules habitants dans l’œuvre de Jonathan Swift, « Le Voyage de Gulliver ». Elle peut nous inspirer un diminutif qui fonctionnera à merveille pour votre boule de poils énergique et futée. C’est le prénom parfait pour témoigner de votre attachement à cette petite créature. Et si votre petite chienne fait des bêtises, vous pourrez la reprendre en l’appelant par un prénom court et efficace qui possède d’autres variantes telles que Lili ou encore Lilo.
+--------------------------------------------------------------------------------
+
+[Para 026] [Style: Heading 3]
+Flocon
+--------------------------------------------------------------------------------
+
+[Para 027] [Style: Normal]
+Vous pouvez vous inspirer des merveilles de la nature pour trouver le prénom idéal pour votre petit chien. Les flocons de neige délicats sont l’une des plus belles choses qui puissent exister et si votre chien est blanc comme neige, alors il n’y a pas de choix plus pertinent que Flocon.
+--------------------------------------------------------------------------------
+
+[Para 028] [Style: Heading 3]
+Noisette
+--------------------------------------------------------------------------------
+
+[Para 029] [Style: Normal]
+[COMPONENT: Text Image 2]
+--------------------------------------------------------------------------------
+
+[Para 031] [Style: Normal]
+Les noms d’aliments ne sont pas nécessairement adaptés à nos fidèles compagnons, à l’exception de Noisette. C’est un prénom adorable pour un petit chien qui l’est tout autant. Si votre animal de compagnie réagit bien à ce joli nom, allez-y ! Assurez-vous simplement que votre famille ne pense pas que vous proposez un en-cas à chaque fois que vous appelez Noisette !
+--------------------------------------------------------------------------------
+
+[Para 033] [Style: Normal]
+[COMPONENT: Text Block 4]
+--------------------------------------------------------------------------------
+
+[Para 034] [Style: Heading 3]
+Biscuit
+--------------------------------------------------------------------------------
+
+[Para 035] [Style: Normal]
+Ce joli petit mot peut être détourné et utilisé pour baptiser un mignon petit chien. Il pourrait avoir vos faveurs si vous trouvez votre nouveau compagnon à quatre pattes aussi mignon que « P’tit Biscuit » dans Shrek.
+--------------------------------------------------------------------------------
+
+[Para 036] [Style: Heading 3]
+Piccolo
+--------------------------------------------------------------------------------
+
+[Para 037] [Style: Normal]
+Pourquoi ne pas vous inspirer d’autres langues ? Vous trouverez facilement le prénom parfait pour votre petit chien en traduisant simplement « petit » dans différentes langues. Piccolo en est un bel exemple. Il signifie « petit » en italien. Vous pouvez même l’abréger en Pico pour un nom plus court, adapté à la stature miniature de votre chien.
+--------------------------------------------------------------------------------
+
+[Para 038] [Style: Heading 2]
+Autres idées de noms pour un petit chien
+--------------------------------------------------------------------------------
+
+[Para 039] [Style: Normal]
+Vous voulez plus de propositions, voici quelques noms pour petits chiens que vous pourrez tester :
+--------------------------------------------------------------------------------
+
+[Para 040] [Style: List Bullet]
+Kiki
+--------------------------------------------------------------------------------
+
+[Para 041] [Style: List Bullet]
+Pépite
+--------------------------------------------------------------------------------
+
+[Para 042] [Style: List Bullet]
+Croquette
+--------------------------------------------------------------------------------
+
+[Para 043] [Style: List Bullet]
+Cookie
+--------------------------------------------------------------------------------
+
+[Para 044] [Style: List Bullet]
+Jiminy (en référence au petit personnage Jiminy Cricket !)
+--------------------------------------------------------------------------------
+
+[Para 045] [Style: List Bullet]
+Dobby
+--------------------------------------------------------------------------------
+
+[Para 046] [Style: List Bullet]
+Nuts
+--------------------------------------------------------------------------------
+
+[Para 047] [Style: List Bullet]
+Doodle
+--------------------------------------------------------------------------------
+
+[Para 048] [Style: List Bullet]
+Chamallow
+--------------------------------------------------------------------------------
+
+[Para 049] [Style: List Bullet]
+Pickles
+--------------------------------------------------------------------------------
+
+[Para 050] [Style: List Bullet]
+Titou
+--------------------------------------------------------------------------------
+
+[Para 051] [Style: List Bullet]
+Dragibus
+--------------------------------------------------------------------------------
+
+[Para 052] [Style: Heading 2]
+Comment choisir le bon prénom pour votre petit chien ?
+--------------------------------------------------------------------------------
+
+[Para 053] [Style: Normal]
+Vous avez du mal à vous décider sur un prénom pour votre chien ? Faites une sélection, puis tentez d’appeler votre chien pour voir comment il réagit. Imaginez que vous êtes en balade avec votre chien. Est-ce que le nom est facile à répéter plusieurs fois ou est-il un peu bizarre de le dire à voix haute ? En testant le nom plusieurs fois avant de décider, vous pourriez même découvrir que votre chien a déjà une préférence. Si votre ami à poils répond à l’un des prénoms en remuant la queue, en venant vers vous ou tout simplement en s’arrêtant net, vous saurez que vous avez trouvé le bon !
+--------------------------------------------------------------------------------
+
+[Para 054] [Style: Normal]
+Si vous essayez de trouver le meilleur prénom pour votre nouveau chiot, peut-être êtes-vous également à la recherche des meilleurs conseils pour prendre soin de lui afin de lui offrir un bon départ dans la vie. Pas de soucis, nous sommes là pour vous aider. Découvrez comment vous pouvez vous occuper des jeunes chiots grâce à ces conseils simples.
+--------------------------------------------------------------------------------
+
+[Para 057] [Style: Normal]
+SEO METADATA
+--------------------------------------------------------------------------------
+
+
+
+=== FULL RAW CONTENT ===
+================================================================================
+
+Source: https://www.purina.fr/choisir-animal/articles/accueillir-chien/prenom/chien-petite-taille
+Les meilleurs prénoms de petits chiens pour votre nouvel animal de compagnie
+Article category: Noms de chien - https://www.purina.fr/choisir-animal/articles/accueillir-chien/prenom
+[COMPONENT: Contact Us Small]
+[COMPONENT: Text Block 1]
+Les petits chiens ont de nombreux atouts. Ils sont mignons, tiennent sur nos genoux, ils nous suivent partout et ont des personnalités amusantes. Si vous êtes l’heureux futur propriétaire d’un petit chien et que vous êtes à la recherche d’un prénom pour votre petit compagnon, voici quelques valeurs sûres.
+[COMPONENT: Text Block 2]
+Nos noms préférés pour les petits chiens
+[COMPONENT: Text Image 1]
+Rocky
+Un nom mignon et court comme votre nouveau chien. Votre tout petit compagnon portera alors un prénom agrémenté d’une bonne dose d’humour qui ne manquera pas d’évoquer également une référence drôle à « The Rock ».
+[COMPONENT: Text Block 3]
+Minnie
+Minnie est un nom particulièrement bien adapté aux petites demoiselles. Si vous êtes fan de Disney, ce nom vous fait sûrement penser à la douce Minnie Mouse, partenaire de toujours de Mickey. Quel choix parfait pour votre adorable amie à quatre pattes !
+Teddy
+Les petits chiens nous évoquent les choses les plus mignonnes de la vie. Si votre charmant nouveau chiot vous fait penser à la célèbre peluche Teddy Bear, vous pouvez le faire savoir haut et fort en choisissant Teddy comme prénom.
+Gribouille
+Les lutins sont les petites mains du Père Noël, réputés farceurs et malicieux – une description qui correspond parfaitement à certains de nos compagnons à poils. Gribouille est l’un d’entre eux, mais il en existe d’autres. Si vous êtes à la recherche d’un prénom de chien qui correspondrait tout à fait à votre petit compagnon facétieux, voici une bonne idée !
+Lily 
+Lilliput est cette île imaginaire peuplée de minuscules habitants dans l’œuvre de Jonathan Swift, « Le Voyage de Gulliver ». Elle peut nous inspirer un diminutif qui fonctionnera à merveille pour votre boule de poils énergique et futée. C’est le prénom parfait pour témoigner de votre attachement à cette petite créature. Et si votre petite chienne fait des bêtises, vous pourrez la reprendre en l’appelant par un prénom court et efficace qui possède d’autres variantes telles que Lili ou encore Lilo.
+Flocon
+Vous pouvez vous inspirer des merveilles de la nature pour trouver le prénom idéal pour votre petit chien. Les flocons de neige délicats sont l’une des plus belles choses qui puissent exister et si votre chien est blanc comme neige, alors il n’y a pas de choix plus pertinent que Flocon.
+Noisette
+[COMPONENT: Text Image 2]
+Les noms d’aliments ne sont pas nécessairement adaptés à nos fidèles compagnons, à l’exception de Noisette. C’est un prénom adorable pour un petit chien qui l’est tout autant. Si votre animal de compagnie réagit bien à ce joli nom, allez-y ! Assurez-vous simplement que votre famille ne pense pas que vous proposez un en-cas à chaque fois que vous appelez Noisette !
+[COMPONENT: Text Block 4]
+Biscuit
+Ce joli petit mot peut être détourné et utilisé pour baptiser un mignon petit chien. Il pourrait avoir vos faveurs si vous trouvez votre nouveau compagnon à quatre pattes aussi mignon que « P’tit Biscuit » dans Shrek.
+Piccolo
+Pourquoi ne pas vous inspirer d’autres langues ? Vous trouverez facilement le prénom parfait pour votre petit chien en traduisant simplement « petit » dans différentes langues. Piccolo en est un bel exemple. Il signifie « petit » en italien. Vous pouvez même l’abréger en Pico pour un nom plus court, adapté à la stature miniature de votre chien.
+Autres idées de noms pour un petit chien
+Vous voulez plus de propositions, voici quelques noms pour petits chiens que vous pourrez tester :
+Kiki
+Pépite
+Croquette
+Cookie
+Jiminy (en référence au petit personnage Jiminy Cricket !)
+Dobby
+Nuts
+Doodle
+Chamallow
+Pickles
+Titou
+Dragibus
+Comment choisir le bon prénom pour votre petit chien ?
+Vous avez du mal à vous décider sur un prénom pour votre chien ? Faites une sélection, puis tentez d’appeler votre chien pour voir comment il réagit. Imaginez que vous êtes en balade avec votre chien. Est-ce que le nom est facile à répéter plusieurs fois ou est-il un peu bizarre de le dire à voix haute ? En testant le nom plusieurs fois avant de décider, vous pourriez même découvrir que votre chien a déjà une préférence. Si votre ami à poils répond à l’un des prénoms en remuant la queue, en venant vers vous ou tout simplement en s’arrêtant net, vous saurez que vous avez trouvé le bon !
+Si vous essayez de trouver le meilleur prénom pour votre nouveau chiot, peut-être êtes-vous également à la recherche des meilleurs conseils pour prendre soin de lui afin de lui offrir un bon départ dans la vie. Pas de soucis, nous sommes là pour vous aider. Découvrez comment vous pouvez vous occuper des jeunes chiots grâce à ces conseils simples.
+SEO METADATA
