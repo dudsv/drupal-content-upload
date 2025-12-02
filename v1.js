@@ -596,6 +596,7 @@ Texto...
         <button class="secondary" id="${ID}-sanitize">Sanitizar</button>
         <button class="secondary" id="${ID}-analyze">Analisar</button>
         <button class="secondary" id="${ID}-extract">Extrair → Blocos</button>
+        <button class="secondary" id="${ID}-preview">Preview</button>
         <button id="${ID}-fill">Preencher Drupal</button>
         <button class="secondary" id="${ID}-close">Fechar</button>
       </div>
@@ -1271,27 +1272,38 @@ Texto...
     let urlAlias = '';
     for (const block of blocks) {
       const text = getText(block);
-      const sourceMatch = text.match(/^Source\s*:\s*(.+)$/i);
+      const sourceMatch = text.match(/^(Source|URL)\s*:\s*(.+)$/i);
       if (sourceMatch) {
-        urlAlias = cleanUrlAlias(sourceMatch[1].trim());
-        console.log('[v1-Phase2] URL extraído de Source:', urlAlias);
+        urlAlias = cleanUrlAlias(sourceMatch[2].trim());
+        console.log('[v1-Phase2] URL extraído de Source/URL:', urlAlias);
         break;
       }
     }
 
     // Extract SEO metadata
-    const allText = tmp.textContent || '';
-    const seoSectionMatch = allText.match(/SEO\s+METADATA([\s\S]*?)(?:\[COMPONENT\s*:|$)/i);
     let metaTitle = '', metaDesc = '';
+    let inSeoSection = false;
 
-    if (seoSectionMatch) {
-      const seoContent = seoSectionMatch[1];
-      const metaTitleMatch = seoContent.match(/Meta\s*title\s*:\s*([^\n]+)/i);
-      const metaDescMatch = seoContent.match(/Meta\s*description\s*:\s*([^\n]+)/i);
-      metaTitle = metaTitleMatch ? dequote(metaTitleMatch[1].trim()) : '';
-      metaDesc = metaDescMatch ? dequote(metaDescMatch[1].trim()) : '';
-      console.log('[v1-Phase2] SEO Metadata extraído:', { metaTitle, metaDesc });
+    for (const block of blocks) {
+      const text = getText(block);
+      if (/^SEO\s+METADATA/i.test(text)) {
+        inSeoSection = true;
+        continue;
+      }
+      if (inSeoSection) {
+        if (/^\[COMPONENT/i.test(text)) {
+          inSeoSection = false;
+          break;
+        }
+
+        const titleMatch = text.match(/^Meta\s*title\s*:\s*(.+)$/i);
+        if (titleMatch) metaTitle = dequote(titleMatch[1].trim());
+
+        const descMatch = text.match(/^Meta\s*description\s*:\s*(.+)$/i);
+        if (descMatch) metaDesc = dequote(descMatch[1].trim());
+      }
     }
+    console.log('[v1-Phase2] SEO Metadata extraído:', { metaTitle, metaDesc });
 
     const ogTitle = metaTitle;
     const ogDesc = metaDesc;
@@ -1338,7 +1350,8 @@ Texto...
     console.log('[v1-Phase2] Template format parsed:', {
       h1, metaTitle, urlAlias,
       componentsCount: components?.length || 0,
-      category: null
+      componentsCount: components?.length || 0,
+      category: extractCategory(clean)
     });
 
     return {
@@ -1346,7 +1359,7 @@ Texto...
       imgBlocks: [],
       metaTitle, metaDesc, ogTitle, ogDesc, urlAlias,
       components: components || [],
-      category: null
+      category: extractCategory(clean)
     };
   };
 
@@ -1485,7 +1498,7 @@ Texto...
 
     for (const block of blocks) {
       const text = getText(block);
-      const categoryMatch = text.match(/^Article\s*category\s*:\s*([^-]+)\s*-\s*(.+)$/i);
+      const categoryMatch = text.match(/^Article\s*category\s*:\s*([^-]+?)\s*-\s*(.+)$/i);
       if (categoryMatch) {
         const category = {
           name: categoryMatch[1].trim(),
@@ -1496,6 +1509,122 @@ Texto...
       }
     }
     return null;
+  };
+
+  // ===== PHASE 3: Content Validation (RF-13) =====
+  const validateContent = (parsed) => {
+    const errors = [];
+    const warnings = [];
+    const info = [];
+
+    // 1. Required Fields
+    if (!parsed.urlAlias) {
+      errors.push('URL Alias ausente');
+    } else if (!parsed.urlAlias.startsWith('/')) {
+      errors.push('URL Alias deve começar com "/"');
+    }
+
+    if (!parsed.h1) {
+      errors.push('Título (H1) ausente');
+    } else if (parsed.h1.length > 255) {
+      errors.push(`Título muito longo (${parsed.h1.length}/255 caracteres)`);
+    }
+
+    // 2. Metadata
+    if (!parsed.metaTitle) {
+      warnings.push('Meta Title ausente');
+    } else if (parsed.metaTitle.length > 60) {
+      warnings.push(`Meta Title muito longo (${parsed.metaTitle.length}/60 caracteres)`);
+    }
+
+    if (!parsed.metaDesc) {
+      warnings.push('Meta Description ausente');
+    } else if (parsed.metaDesc.length > 160) {
+      warnings.push(`Meta Description muito longa (${parsed.metaDesc.length}/160 caracteres)`);
+    }
+
+    // 3. Components
+    if (!parsed.components || parsed.components.length === 0) {
+      warnings.push('Nenhum componente encontrado');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      info
+    };
+  };
+
+  // ===== PHASE 3: Preview UI (RF-14) =====
+  const showPreview = (parsed) => {
+    const previewId = 'nppe-preview-modal';
+    document.getElementById(previewId)?.remove();
+
+    const modal = document.createElement('div');
+    modal.id = previewId;
+    modal.style.cssText = `
+      position: fixed; inset: 0; z-index: 2147483648; background: rgba(0,0,0,0.8);
+      display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif;
+    `;
+
+    let componentsHtml = '';
+    if (parsed.components && parsed.components.length > 0) {
+      componentsHtml = parsed.components.map((c, i) => `
+        <div style="background:#111; padding:15px; margin-bottom:15px; border:1px solid #333; border-radius:8px;">
+          <div style="color:#888; font-size:12px; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px;">Component ${i + 1}: ${c.type}</div>
+          <div style="line-height:1.6;">${c.content}</div>
+        </div>
+      `).join('');
+    } else {
+      // Fallback for standard format
+      componentsHtml = `
+        <div style="background:#111; padding:15px; margin-bottom:15px; border:1px solid #333; border-radius:8px;">${parsed.intro || '<em style="color:#666">No Intro</em>'}</div>
+        <div style="background:#111; padding:15px; margin-bottom:15px; border:1px solid #333; border-radius:8px;">${parsed.t1 || '<em style="color:#666">No Text 1</em>'}</div>
+        <div style="background:#111; padding:15px; margin-bottom:15px; border:1px solid #333; border-radius:8px;">${parsed.t2 || '<em style="color:#666">No Text 2</em>'}</div>
+        <div style="background:#111; padding:15px; margin-bottom:15px; border:1px solid #333; border-radius:8px;">${parsed.t3 || '<em style="color:#666">No Text 3</em>'}</div>
+      `;
+    }
+
+    modal.innerHTML = `
+      <div style="width:min(1000px, 90vw); max-height:90vh; background:#0f1115; color:#eee; border-radius:12px; display:flex; flex-direction:column; box-shadow:0 20px 50px rgba(0,0,0,0.7); border:1px solid #333;">
+        <div style="padding:16px 20px; border-bottom:1px solid #23262d; display:flex; justify-content:space-between; align-items:center; background:#15181e; border-radius:12px 12px 0 0;">
+          <h3 style="margin:0; font-size:18px; font-weight:600;">Preview do Artigo</h3>
+          <button id="${previewId}-close" style="background:none; border:none; color:#888; font-size:24px; cursor:pointer; line-height:1;">&times;</button>
+        </div>
+        <div style="padding:20px; overflow:auto; flex:1;">
+          <div style="margin-bottom:24px; padding:20px; background:#1a1d24; border-radius:10px; border:1px solid #2a2f3a;">
+            <h1 style="margin-top:0; font-size:24px; color:#fff; margin-bottom:16px;">${parsed.h1 || '<span style="color:#666">(Sem Título H1)</span>'}</h1>
+            <div style="display:grid; grid-template-columns:120px 1fr; gap:8px 16px; font-size:13px; color:#ccc;">
+              <strong style="color:#888;">URL Alias:</strong> <span style="font-family:monospace; background:#111; padding:2px 6px; border-radius:4px;">${parsed.urlAlias || '-'}</span>
+              <strong style="color:#888;">Meta Title:</strong> <span>${parsed.metaTitle || '-'}</span>
+              <strong style="color:#888;">Meta Desc:</strong> <span>${parsed.metaDesc || '-'}</span>
+              <strong style="color:#888;">Category:</strong> <span>${parsed.category ? parsed.category.name : '-'}</span>
+            </div>
+          </div>
+          <div class="preview-content">
+            <h4 style="margin-top:0; color:#888; border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:15px;">Conteúdo / Componentes</h4>
+            ${componentsHtml}
+          </div>
+        </div>
+        <div style="padding:16px 20px; border-top:1px solid #23262d; display:flex; justify-content:flex-end; gap:12px; background:#15181e; border-radius:0 0 12px 12px;">
+          <button id="${previewId}-cancel" style="padding:10px 20px; background:#2a2f3a; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:500;">Cancelar</button>
+          <button id="${previewId}-confirm" style="padding:10px 20px; background:#2a6df5; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600;">Preencher Drupal &rarr;</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Handlers
+    const close = () => modal.remove();
+    modal.querySelector(`#${previewId}-close`).onclick = close;
+    modal.querySelector(`#${previewId}-cancel`).onclick = close;
+    modal.querySelector(`#${previewId}-confirm`).onclick = () => {
+      close();
+      const fillBtn = document.getElementById(`${ID}-fill`);
+      if (fillBtn) fillBtn.click();
+    };
   };
 
   // ===== PHASE 2: AJAX Helper Functions =====
@@ -2355,6 +2484,13 @@ Texto...
     } catch (e) { console.error(e); log('Erro ao extrair:', e.message); }
   };
 
+  $(`#${ID}-preview`).onclick = () => {
+    try {
+      const parsed = parseArticle($ed.innerHTML);
+      showPreview(parsed);
+    } catch (e) { console.error(e); log('Erro ao gerar preview:', e.message); }
+  };
+
   $(`#${ID}-analyze`).onclick = async () => {
     try {
       // Fonte padrão = conteúdo atual do Editor
@@ -2375,6 +2511,16 @@ Texto...
       }
 
       const parsed = parseArticle(src || $ed.innerHTML);
+
+      // ===== PHASE 3: Content Validation (RF-13) =====
+      const validation = validateContent(parsed);
+      if (!validation.valid || validation.warnings.length > 0) {
+        let msg = '';
+        if (!validation.valid) msg += '❌ ERROS:\n' + validation.errors.join('\n') + '\n\n';
+        if (validation.warnings.length > 0) msg += '⚠️ AVISOS:\n' + validation.warnings.join('\n');
+        alert(msg);
+      }
+
       $ed.innerHTML = parsed.clean;
 
       $h1.innerText = parsed.h1 || '';
@@ -2403,7 +2549,9 @@ Texto...
         metaDesc: parsed.metaDesc,
         ogTitle: parsed.ogTitle || parsed.metaTitle,
         ogDesc: parsed.ogDesc || parsed.metaDesc,
-        urlAlias: parsed.urlAlias
+        urlAlias: parsed.urlAlias,
+        components: parsed.components,
+        category: parsed.category
       });
     } catch (e) {
       console.error(e);
