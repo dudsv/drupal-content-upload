@@ -1231,22 +1231,6 @@ Texto...
           // If it's c_text, it might be a mistake if we didn't detect it earlier.
           // But let's keep it simple.
         }
-        current.content += node.outerHTML;
-        continue;
-      }
-
-      if (inIntro) {
-        // Check if this is H1 or Meta, ignore
-        if (tag === 'H1' || /^(Meta|OG|URL|Source)/i.test(text)) {
-          // ignore
-        } else {
-          introContent += node.outerHTML;
-        }
-      } else {
-        if (!current) {
-          current = { type: 'c_text', content: '', index: components.length, drupalType: 'c_text', label: 'Text Block' };
-        }
-        current.content += node.outerHTML;
       }
     }
     flush();
@@ -1284,23 +1268,59 @@ Texto...
     let metaTitle = '', metaDesc = '';
     let inSeoSection = false;
 
-    for (const block of blocks) {
-      const text = getText(block);
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      const text = getText(block).trim();
+
       if (/^SEO\s+METADATA/i.test(text)) {
         inSeoSection = true;
         continue;
       }
+
       if (inSeoSection) {
         if (/^\[COMPONENT/i.test(text)) {
           inSeoSection = false;
-          break;
+          continue; // Don't break, might be more components
         }
 
-        const titleMatch = text.match(/^Meta\s*title\s*:\s*(.+)$/i);
-        if (titleMatch) metaTitle = dequote(titleMatch[1].trim());
+        // Handle "Label: Value" (Single line)
+        let match = text.match(/^Meta\s*title\s*:\s*(.+)$/i);
+        if (match) { metaTitle = dequote(match[1].trim()); continue; }
 
-        const descMatch = text.match(/^Meta\s*description\s*:\s*(.+)$/i);
-        if (descMatch) metaDesc = dequote(descMatch[1].trim());
+        match = text.match(/^Meta\s*description\s*:\s*(.+)$/i);
+        if (match) { metaDesc = dequote(match[1].trim()); continue; }
+
+        match = text.match(/^(Internal\s*URL|URL)\s*:\s*(.+)$/i);
+        if (match) { urlAlias = cleanUrlAlias(match[2].trim()); continue; }
+
+        // Handle "Label" \n "Value" (Multi-line)
+        // Check if current line is a label and next line exists
+        // Handle "Label" \n "Value" (Multi-line)
+        // Check if current line is a label and next line exists
+        let nextIndex = i + 1;
+        while (nextIndex < blocks.length && !getText(blocks[nextIndex]).trim()) {
+          nextIndex++;
+        }
+
+        if (nextIndex < blocks.length) {
+          const nextText = getText(blocks[nextIndex]).trim();
+
+          if (/^Meta\s*title$/i.test(text)) {
+            metaTitle = dequote(nextText);
+            i = nextIndex; // Skip consumed block
+            continue;
+          }
+          if (/^Meta\s*description$/i.test(text)) {
+            metaDesc = dequote(nextText);
+            i = nextIndex;
+            continue;
+          }
+          if (/^(Internal\s*URL|URL)$/i.test(text)) {
+            urlAlias = cleanUrlAlias(nextText);
+            i = nextIndex;
+            continue;
+          }
+        }
       }
     }
     console.log('[v1-Phase2] SEO Metadata extraído:', { metaTitle, metaDesc });
@@ -1309,8 +1329,31 @@ Texto...
     const ogDesc = metaDesc;
 
     // Extract components
-    let components = extractComponents(clean);
+    const extractionResult = extractComponents(clean);
+    let components = extractionResult ? extractionResult.components : [];
+    let sidebarComponents = extractionResult ? extractionResult.sidebarComponents : [];
     let intro = '';
+    let heroImage = '';
+
+    // Create a set of content from extracted components to avoid duplicating it in Intro
+    const componentContentSet = new Set();
+    const allComponents = [...(components || []), ...(sidebarComponents || [])];
+
+    if (allComponents.length > 0) {
+      allComponents.forEach(c => {
+        const div = document.createElement('div');
+        div.innerHTML = c.content;
+        // Add each block's text to the set
+        const children = div.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, div');
+        children.forEach(child => {
+          const txt = (child.textContent || '').trim();
+          if (txt) componentContentSet.add(txt);
+        });
+        // Also check direct text content if it's a single block
+        const fullTxt = (div.textContent || '').trim();
+        if (fullTxt) componentContentSet.add(fullTxt);
+      });
+    }
 
     if (!components) {
       console.log('[v1-Phase2] No [COMPONENT] markers found. Trying structure-based extraction.');
@@ -1318,6 +1361,30 @@ Texto...
       components = struct.components;
       intro = struct.intro;
     } else {
+      // Extract Hero Image (first image before Intro/Text)
+      for (const block of blocks) {
+        if (block.tagName === 'H1') continue;
+        const text = (block.textContent || '').trim();
+        // Match URL or filename with image extension
+        const imgMatch = text.match(/^IMAGE:\s*(.+)$/i) || text.match(/^(https?:\/\/.*\.(jpg|png|jpeg|webp))/i);
+        if (imgMatch) {
+          const candidate = imgMatch[1].trim();
+          if (candidate.match(/\.(jpg|png|jpeg|webp)$/i)) {
+            heroImage = candidate;
+            break;
+          }
+        }
+        const imgTag = block.querySelector('img');
+        if (imgTag) {
+          heroImage = imgTag.src;
+          break;
+        }
+        // Stop if we hit a text block (Intro candidate)
+        if (text && !text.match(/^(Source|Article category|SEO METADATA|\[COMPONENT|IMAGE:|Alt Text:|Meta Title|Meta Description)/i)) {
+          break;
+        }
+      }
+
       // Legacy Intro extraction for explicit markers
       let foundH1 = false;
       for (const block of blocks) {
@@ -1327,7 +1394,16 @@ Texto...
         }
         if (foundH1 && block.tagName === 'P') {
           const text = (block.textContent || '').trim();
-          if (text && !text.match(/^(Source|Article category|SEO METADATA|\[COMPONENT)/i)) {
+
+          // Check if this text belongs to a known component
+          if (componentContentSet.has(text)) continue;
+
+          // Stop if we hit the Schema block
+          if (/^Schema$/i.test(text)) break;
+
+          // Ignore Source, Category, Meta, Component markers AND Image URLs/Tags AND "IMAGE:" prefix AND "Alt Text:" AND "Meta Title/Description"
+          // Also ignore standalone labels like "Title", "URL", "Internal URL", "OG Title", "OG Description"
+          if (text && !text.match(/^(Source|Article category|SEO METADATA|\[COMPONENT|IMAGE:|Alt Text:|Meta Title|Meta Description|Title|URL|Internal URL|OG Title|OG Description|Component:)/i) && !text.match(/^https?:\/\/.*\.(jpg|png|jpeg|webp)/i) && !block.querySelector('img')) {
             intro = `<h3>${block.innerHTML}</h3>`;
             break;
           }
@@ -1337,8 +1413,59 @@ Texto...
 
     // If components found, use them; otherwise fallback to t1
     let t1 = '', t2 = '', t3 = '';
+    const imgBlocks = [];
+
     if (components && components.length > 0) {
-      console.log('[v1-Phase2] Usando componentes estruturados');
+      console.log('[v1-Phase2] Usando componentes estruturados - Mapeando para UI legado (visual apenas)');
+
+      // Map components to legacy UI blocks for "Extract" button feedback
+      let textCount = 0;
+      const hasTextBlock1 = components.some(c => c.type === 'Text Block 1');
+      let foundTextBlock1 = false;
+
+      for (const comp of components) {
+        console.log('[v1-Phase2] Mapeando componente:', comp.drupalType, comp.content.substring(0, 30) + '...');
+
+        // Skip Signposting (Contact Us) and other non-content blocks for the main text slots
+        if (['c_signposting', 'c_media', 'c_products_list', 'c_tabbed_content', 'c_accordion', 'c_brand_carousel', 'c_document'].includes(comp.drupalType)) {
+          continue;
+        }
+
+        if (comp.drupalType === 'c_text') {
+          if (hasTextBlock1) {
+            // Strict mode: Text Block 1 MUST be Intro
+            if (comp.type === 'Text Block 1') {
+              intro = comp.content;
+              foundTextBlock1 = true;
+              continue;
+            }
+
+            if (!foundTextBlock1) {
+              console.log('[v1-Phase2] Ignorando texto antes do Text Block 1:', comp.type);
+              continue; // Ignore text before Text Block 1
+            }
+
+            // Found Text Block 1 already, so this is t1, t2...
+            textCount++;
+          } else {
+            // Original logic (fallback)
+            textCount++;
+            if (!intro && textCount === 1) {
+              intro = comp.content;
+              textCount--; // Reset count so next block becomes t1
+              continue;
+            }
+          }
+
+          if (textCount === 1) t1 = comp.content;
+          else if (textCount === 2) t2 = comp.content;
+          else if (textCount === 3) t3 = comp.content;
+          else if (textCount > 3) t3 += '<br><hr><br>' + comp.content; // Append overflow to t3
+        } else if (comp.drupalType === 'c_sideimagetext') {
+          // Extract summary/text from side image component for visual preview
+          imgBlocks.push({ alt: '', summary: comp.content });
+        }
+      }
     } else {
       const contentBlocks = blocks.filter(b => {
         const text = (b.textContent || '').trim();
@@ -1350,16 +1477,18 @@ Texto...
     console.log('[v1-Phase2] Template format parsed:', {
       h1, metaTitle, urlAlias,
       componentsCount: components?.length || 0,
-      componentsCount: components?.length || 0,
-      category: extractCategory(clean)
+      category: extractCategory(clean),
+      heroImage
     });
 
     return {
       clean, h1, intro, t1, t2, t3,
-      imgBlocks: [],
+      imgBlocks,
       metaTitle, metaDesc, ogTitle, ogDesc, urlAlias,
       components: components || [],
-      category: extractCategory(clean)
+      sidebarComponents: sidebarComponents || [],
+      category: extractCategory(clean),
+      heroImage
     };
   };
 
@@ -1440,18 +1569,31 @@ Texto...
     'Text Block 1': 'c_text',
     'Text Block 2': 'c_text',
     'Text Block 3': 'c_text',
+    'Text Block 4': 'c_text',
+    'Text Image 1': 'c_sideimagetext',
+    'Text Image 2': 'c_sideimagetext',
     'Contact Us Small': 'c_signposting',
+    'Article List': 'c_article_list',
     'Image Gallery': 'c_media',
     'Product Recommendations': 'c_products_list',
     'Tabbed Content': 'c_tabbed_content',
     'Accordion': 'c_accordion',
     'Brand Carousel': 'c_brand_carousel',
-    'Document': 'c_document'
+    'Document': 'c_document',
+    // Self-mapping for internal types
+    'c_text': 'c_text',
+    'c_sideimagetext': 'c_sideimagetext',
+    'c_signposting': 'c_signposting',
+    'c_article_list': 'c_article_list',
+    'c_media': 'c_media',
+    'c_products_list': 'c_products_list',
+    'c_tabbed_content': 'c_tabbed_content',
+    'c_accordion': 'c_accordion',
   };
 
-  // ===== PHASE 2: Extract Components from template.docx =====
   const extractComponents = (html) => {
     const components = [];
+    const sidebarComponents = [];
     const componentRegex = /\[COMPONENT:\s*([^\]]+)\]/gi;
     const matches = [...html.matchAll(componentRegex)];
     if (matches.length === 0) return null;
@@ -1463,36 +1605,55 @@ Texto...
       const endIndex = nextMatch ? nextMatch.index : html.length;
       const rawContent = html.substring(startIndex, endIndex);
 
+      // Extract content blocks (p, ul, ol, h2, h3, etc.)
       const tmp = document.createElement('div');
       tmp.innerHTML = rawContent;
-      const blocks = [...tmp.querySelectorAll('p,h1,h2,h3,h4,ul,ol')].filter(el => {
-        const text = (el.textContent || '').trim();
-        return text && !text.match(/^(Source|Article category|Meta|SEO METADATA|URL\s*:|\[COMPONENT)/i);
+      const blocks = getParagraphs(tmp);
+
+      // Check for Image Position in content
+      let imagePosition = null;
+      const filteredBlocks = blocks.filter(b => {
+        const txt = b.textContent.trim();
+        const posMatch = txt.match(/^Image Position:\s*(Left|Right)/i);
+        if (posMatch) {
+          imagePosition = posMatch[1].toLowerCase();
+          return false; // Remove from content
+        }
+        return true;
       });
 
-      const content = blocks.map(b => b.outerHTML).join('');
+      const content = filteredBlocks.map(b => b.outerHTML).join('');
       const drupalType = COMPONENT_TYPE_MAPPING[type] || 'c_text';
 
       if (drupalType === 'c_text' && !COMPONENT_TYPE_MAPPING[type]) {
         console.warn(`[v1-Phase2] Componente não mapeado: "${type}", usando c_text como fallback`);
       }
 
-      components.push({
+      const compData = {
         type: type,
         content: content,
         rawHtml: rawContent,
-        drupalType: drupalType
-      });
+        drupalType: drupalType,
+        imagePosition: imagePosition
+      };
+
+      // Separate Sidebar components
+      if (type === 'Contact Us Small' || drupalType === 'c_signposting') {
+        sidebarComponents.push(compData);
+      } else {
+        components.push(compData);
+      }
     });
 
-    console.log(`[v1-Phase2] ${components.length} componente(s) extraído(s)`);
-    return components.length > 0 ? components : null;
+    console.log(`[v1-Phase2] ${components.length} componente(s) principal(is) extraído(s)`);
+    console.log(`[v1-Phase2] ${sidebarComponents.length} componente(s) de sidebar extraído(s)`);
+
+    return { components, sidebarComponents };
   };
 
-  // ===== PHASE 2: Extract Category from template.docx =====
   const extractCategory = (html) => {
     const tmp = document.createElement('div');
-    tmp.innerHTML = html || '';
+    tmp.innerHTML = html;
     const blocks = [...tmp.querySelectorAll('p,h1,h2,h3,h4')];
     const getText = (el) => (el.textContent || '').replace(/\u00a0/g, ' ').trim();
 
@@ -1630,28 +1791,36 @@ Texto...
   // ===== PHASE 2: AJAX Helper Functions =====
 
   // Wait for Drupal AJAX operations to complete
-  const waitForAjax = async (timeout = 15000) => {
-    const start = Date.now();
+  const waitForAjax = async (timeout = 15000, retries = 1) => {
+    const check = async () => {
+      const start = Date.now();
+      // 1. Wait for potential AJAX start (stabilization)
+      await new Promise(resolve => setTimeout(resolve, 200));
 
-    // 1. Wait for potential AJAX start (stabilization)
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    while (Date.now() - start < timeout) {
-      if (window.jQuery) {
-        if (window.jQuery.active === 0) {
-          // Double check: wait a bit more to ensure it's really done
-          await new Promise(resolve => setTimeout(resolve, 100));
-          if (window.jQuery.active === 0) return true;
+      while (Date.now() - start < timeout) {
+        if (window.jQuery) {
+          if (window.jQuery.active === 0) {
+            // Double check: wait a bit more to ensure it's really done
+            await new Promise(resolve => setTimeout(resolve, 100));
+            if (window.jQuery.active === 0) return true;
+          }
+        } else {
+          // Fallback if jQuery not present (shouldn't happen in Drupal admin)
+          const ajaxActive = document.querySelector('.ajax-progress') !== null;
+          if (!ajaxActive) return true;
         }
-      } else {
-        // Fallback if jQuery not present (shouldn't happen in Drupal admin)
-        const ajaxActive = document.querySelector('.ajax-progress') !== null;
-        if (!ajaxActive) return true;
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
+      return false;
+    };
+
+    for (let i = 0; i <= retries; i++) {
+      if (i > 0) console.log(`[v1-Phase3] Retrying AJAX wait (attempt ${i}/${retries})...`);
+      const success = await check();
+      if (success) return true;
     }
 
-    console.warn('[v1-Phase2] AJAX timeout after', timeout, 'ms');
+    console.warn('[v1-Phase3] AJAX timeout after', timeout, 'ms and', retries, 'retries');
     return false;
   };
 
@@ -1682,15 +1851,28 @@ Texto...
       'c_text': 'c-text',
       'c_sideimagetext': 'c-sideimagetext-ttt',
       'c_signposting': 'c-signposting',
+      'c_article_list': null, // Ignored as requested
       'c_media': 'c-media',
       'c_products_list': 'c-products-list',
       'c_tabbed_content': 'c-tabbed-content',
       'c_accordion': 'accordion',
       'c_brand_carousel': 'c-brand-carousel',
-      'c_document': 'c-document'
+      'c_document': 'c-document',
+      'c_image': 'c-image',
+      'c_brand_discovery': 'c-brand-discovery',
+      'product_detail_item': 'product-detail-item',
+      'product_listing_block': 'product-listing-block',
+      'sidebar_block': 'sidebar-block',
+      'from_library': 'from-library',
+      'c_pet_age_calculator': 'c-pet-age-calculator'
     };
 
     const mappedType = typeMapping[drupalType] || drupalType;
+
+    if (mappedType === null) {
+      console.warn(`[v1-Phase2.5] Ignoring component type: ${drupalType}`);
+      return null;
+    }
 
     // Pattern: field-article-lp-components-{type}-add-more--{unique-suffix}
     // Use querySelector to find button that starts with the pattern
@@ -1709,8 +1891,11 @@ Texto...
   // ===== PHASE 2: Component Creation Logic =====
 
   // Check if a component exists at a specific index
+  // Check if a component exists at a specific index (handling random suffixes)
   const componentExists = (index) => {
-    const wrapper = document.getElementById(`field-article-lp-components-${index}-item-wrapper`);
+    // Drupal 10+ adds random suffixes like --ZgEISaIFIWU
+    const selector = `div[id^="field-article-lp-components-${index}-item-wrapper"]`;
+    const wrapper = document.querySelector(selector);
     return wrapper !== null;
   };
 
@@ -1797,6 +1982,12 @@ Texto...
           ...component,
           index: targetIndex
         });
+
+        // Apply Image Position if present (Phase 9)
+        if (component.imagePosition) {
+          await setSideImagePosition(targetIndex, component.imagePosition, logs);
+        }
+
       } else {
         logs.push(`⚠️ Novo componente ${i} não detectado após AJAX`);
       }
@@ -1804,57 +1995,45 @@ Texto...
       // Small delay to ensure DOM stability
       await new Promise(r => setTimeout(r, 500));
     }
-    console.log('[v1-Phase2] Processamento de componentes concluído:', processedComponents.length);
+
     return processedComponents;
   };
 
-  // Set position for Side Image + Text component
-  const setSideImagePosition = async (index, position, logs) => {
-    // position: 'left' or 'right'
-    const wrapper = document.getElementById(`field-article-lp-components-${index}-item-wrapper`);
-    if (!wrapper) return;
-
-    // Try to find radio buttons with value 'left'/'right'
-    const radios = Array.from(wrapper.querySelectorAll('input[type="radio"]'));
-    let target = radios.find(r => r.value.toLowerCase() === position);
-
-    if (target) {
-      if (!target.checked) {
-        target.click();
-        logs.push(`✅ Posição ${position} definida para componente ${index}`);
-      } else {
-        logs.push(`ℹ️ Posição já era ${position} para componente ${index}`);
-      }
-    } else {
-      logs.push(`⚠️ Campo de posição (${position}) não encontrado para componente ${index}`);
-    }
-  };
-
-  // Fill content into a specific component  
+  // Helper to fill content for a specific component index
   const fillComponentContent = async (componentIndex, content, logs) => {
     if (!content || content.trim() === '') {
       logs.push(`[v1-Phase2] Componente ${componentIndex}: conteúdo vazio, pulando`);
       return false;
     }
 
-    // Try to find CKEditor field within this component
-    // Pattern: field-article-lp-components-{index}-subform-field-text-0-value
-    const possibleSelectors = [
-      `#field-article-lp-components-${componentIndex}-subform-field-text-0-value`,
-      `#field-article-lp-components-${componentIndex}-subform-field-content-0-value`,
-      `#field-article-lp-components-${componentIndex}-subform-field-body-0-value`
-    ];
+    // 1. Find the wrapper first (handling suffixes)
+    const wrapperSelector = `div[id^="field-article-lp-components-${componentIndex}-item-wrapper"]`;
+    const wrapper = document.querySelector(wrapperSelector);
 
-    for (const selector of possibleSelectors) {
-      const field = document.querySelector(selector);
-      if (field) {
-        console.log('[v1-Phase2] Preenchendo componente', componentIndex, 'com', content.length, 'caracteres');
-        await setRichText(selector, content, logs);
-        return true;
-      }
+    if (!wrapper) {
+      logs.push(`⚠️ Wrapper não encontrado para componente ${componentIndex}`);
+      return false;
     }
 
-    logs.push(`⚠️ Campo de texto não encontrado no componente ${componentIndex}`);
+    // 2. Find the textarea within the wrapper
+    // Try standard body field first
+    let fieldSelector = 'textarea[name*="body"]';
+    let field = wrapper.querySelector(fieldSelector);
+
+    if (!field) {
+      // Try summary field (for side image text)
+      fieldSelector = 'textarea[name*="field_c_sideimagetext_summary"]';
+      field = wrapper.querySelector(fieldSelector);
+    }
+
+    if (field && field.id) {
+      console.log('[v1-Phase2] Preenchendo componente', componentIndex, 'campo', field.id);
+      // We must pass the ID to setRichText
+      await setRichText(`#${field.id}`, content, logs);
+      return true;
+    }
+
+    logs.push(`⚠️ Campo de texto não encontrado DENTRO do componente ${componentIndex}`);
     return false;
   };
 
@@ -2316,6 +2495,46 @@ Texto...
   };
   wrap.querySelector('.toolbar').addEventListener('click', onToolbarClick);
 
+  // Helper to set Side Image Position
+  const setSideImagePosition = async (index, position, logs) => {
+    const wrapperId = `edit-field-article-lp-components-${index}-subform`; // Drupal 10 subform wrapper
+    // Fallback to item wrapper if subform not found
+    let wrapper = document.getElementById(wrapperId) || document.getElementById(`edit-field-article-lp-components-${index}-item`);
+
+    if (!wrapper) {
+      // Try finding by attribute if ID is dynamic
+      wrapper = document.querySelector(`[data-drupal-selector="edit-field-article-lp-components-${index}-subform"]`);
+    }
+
+    if (!wrapper) {
+      logs.push(`⚠️ Wrapper não encontrado para componente ${index} ao definir posição.`);
+      return;
+    }
+
+    // Normalize position
+    const pos = position.toLowerCase();
+
+    // Try Radio Buttons
+    // Name format: field_article_lp_components[0][subform][field_side_image_position]
+    const radio = wrapper.querySelector(`input[type="radio"][value="${pos}"]`);
+    if (radio) {
+      radio.click();
+      logs.push(`✅ Posição definida: ${pos} (Comp ${index})`);
+      return;
+    }
+
+    // Try Select (if changed to select)
+    const select = wrapper.querySelector(`select[name*="field_side_image_position"]`);
+    if (select) {
+      select.value = pos;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      logs.push(`✅ Posição definida (Select): ${pos} (Comp ${index})`);
+      return;
+    }
+
+    logs.push(`⚠️ Campo de posição não encontrado em Comp ${index}`);
+  };
+
   // ===== Fill logic (Meta/OG/URL e H1 sem delay; H1 reforçado) =====
   const fillDrupal = async (mapping, meta) => {
     const logs = [];
@@ -2416,7 +2635,6 @@ Texto...
       contentTasks.push(setSideImagePosition(4, 'right', logs));
     }
     await Promise.all(contentTasks);
-
     await upfront;
     await applyH1Once();
 
@@ -2439,16 +2657,34 @@ Texto...
             await fillComponentContent(comp.index, comp.content, logs);
           }
 
-          // Handle Position for c_sideimagetext
-          if (comp.type === 'c_sideimagetext') {
+          // Apply Side Image Position (Default: Left -> Right -> Left...)
+          if (comp.drupalType === 'c_sideimagetext') {
             sideImageCount++;
-            // 1 -> Left, 2 -> Right, 3 -> Left...
-            const position = sideImageCount % 2 !== 0 ? 'left' : 'right';
-            await setSideImagePosition(comp.index, position, logs);
+            const defaultPos = sideImageCount % 2 !== 0 ? 'left' : 'right';
+            const pos = comp.imagePosition || defaultPos;
+            await setSideImagePosition(comp.index, pos, logs);
           }
         }
 
         logs.push(`✅ ${createdComponents.length}/${meta.components.length} componentes processados`);
+      }
+    }
+
+    // ===== PHASE 9: Handle Sidebar Components =====
+    if (meta?.sidebarComponents && meta.sidebarComponents.length > 0) {
+      logs.push('');
+      logs.push('📦 PHASE 9: Configurando Sidebar...');
+      for (const comp of meta.sidebarComponents) {
+        if (comp.type === 'Contact Us Small' || comp.drupalType === 'c_signposting') {
+          const sidebarInput = document.getElementById('edit-field-article-sidebar-block-0-target-id');
+          if (sidebarInput) {
+            sidebarInput.value = 'Contact us small (123)'; // Mock ID
+            sidebarInput.dispatchEvent(new Event('input', { bubbles: true }));
+            logs.push('✅ Sidebar configurada com "Contact us small"');
+          } else {
+            logs.push('⚠️ Campo de Sidebar não encontrado (edit-field-article-sidebar-block-0-target-id)');
+          }
+        }
       }
     }
 
@@ -2473,6 +2709,7 @@ Texto...
     try {
       let parsed = extractByMarkers($ed.innerHTML);
       if (!parsed) parsed = parseArticle($ed.innerHTML);
+      if (parsed.h1) $h1.textContent = parsed.h1;
       $intro.innerHTML = parsed.intro || '';
       $t1.innerHTML = parsed.t1 || '';
       $t2.innerHTML = parsed.t2 || '';

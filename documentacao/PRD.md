@@ -42,3 +42,24 @@ O objetivo deste projeto é refatorar a ferramenta "Drupal Content Upload" (atua
 - `src/drupal`: Adaptadores para interação com a página do Drupal.
 - `src/utils`: Helpers genéricos.
 - `src/config`: Definições de modelos e constantes.
+
+## 6. Fases de Implementação
+
+### Fase 1: Suporte Básico (Concluída ✅)
+- Suporte a múltiplos formatos de DOCX.
+- Refatoração inicial do parser.
+
+### Fase 2: Componentes Especiais (Concluída ✅)
+- Parsing de `[COMPONENT: ...]` markers.
+- Extração de Categoria e Metadados SEO.
+- Criação automatizada de componentes via AJAX.
+
+### Fase 3: Refinamentos Avançados (Concluída ✅)
+- **RF-13**: Validação de Conteúdo (Alertas de erros/warnings).
+- **RF-14**: Preview do Artigo (Modal visual antes do preenchimento).
+- **RF-17**: Recuperação de Erros (Retry automático para AJAX).
+- *RF-15 (Batch Processing) adiado.*
+
+### Fase 4: Testes Complexos (Em Planejamento 🚧)
+- Validação com `medium.docx` (estruturas complexas).
+- Refinamento de edge cases.
