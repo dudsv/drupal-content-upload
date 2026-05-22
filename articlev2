@@ -1,0 +1,917 @@
+/**
+ * Drupal Auto-Filler (Modernizado)
+ * Bookmarklet pragmático focado em fundamentos e ausência de "hardcoding".
+ * Arquitetura em escopos: UI, Extrator (DOCX), Analisador (Semântica) e Injetor (Drupal).
+ */
+(() => {
+    'use strict';
+
+    // =========================================================================
+    // 1. UTILITÁRIOS BASE
+    // =========================================================================
+    const waitFor = (fnOrSel, { timeout = 8000, interval = 120 } = {}) => new Promise((resolve, reject) => {
+        const t0 = performance.now();
+        const tick = () => {
+            try {
+                const val = typeof fnOrSel === 'function' ? fnOrSel() : document.querySelector(fnOrSel);
+                if (val) return resolve(val);
+                if (performance.now() - t0 > timeout) return reject(new Error('Timeout: ' + (fnOrSel.toString?.() || fnOrSel)));
+                setTimeout(tick, interval);
+            } catch (e) { reject(e); }
+        };
+        tick();
+    });
+
+    const loadJSZip = () => new Promise((resolve, reject) => {
+        if (window.JSZip) return resolve(window.JSZip);
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+        s.onload = () => resolve(window.JSZip);
+        s.onerror = () => reject(new Error('Falha ao carregar JSZip'));
+        document.head.appendChild(s);
+    });
+
+    const sanitizeHTML = (html) => {
+        const allowed = new Set(['DIV', 'P', 'STRONG', 'B', 'EM', 'I', 'UL', 'OL', 'LI', 'A', 'H1', 'H2', 'H3', 'H4', 'BR']);
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html || '';
+
+        const walk = (node) => {
+            for (let c = node.firstChild; c;) {
+                const n = c.nextSibling;
+                if (c.nodeType === 1) {
+                    const tag = c.tagName;
+                    if (!allowed.has(tag)) {
+                        while (c.firstChild) node.insertBefore(c.firstChild, c);
+                        node.removeChild(c);
+                        c = n; continue;
+                    }
+                    if (tag === 'A') {
+                        let href = c.getAttribute('href');
+                        if (href && !href.toLowerCase().startsWith('javascript:')) c.setAttribute('href', href);
+                        else c.removeAttribute('href');
+                        [...c.attributes].forEach(a => { if (a.name !== 'href') c.removeAttribute(a.name); });
+                    } else {
+                        [...c.attributes].forEach(a => c.removeAttribute(a.name));
+                    }
+                    walk(c);
+                }
+                c = n;
+            }
+        };
+        walk(tmp);
+        return tmp.innerHTML.replace(/<p>\s*<\/p>/gi, '').replace(/(\s*<br\s*\/?>(\s|&nbsp;)*){2,}/gi, '<br>');
+    };
+
+    // =========================================================================
+    // 2. EXTRATOR DOCX (XML -> HTML)
+    // =========================================================================
+    const DocxExtractor = {
+        async extract(file) {
+            const JSZip = await loadJSZip();
+            const z = await JSZip.loadAsync(await file.arrayBuffer());
+            const docXml = await z.file('word/document.xml')?.async('string');
+            const relsXml = await z.file('word/_rels/document.xml.rels')?.async('string') || '';
+            const stylesXml = await z.file('word/styles.xml')?.async('string') || '';
+            if (!docXml) throw new Error('Documento Word inválido');
+
+            const parse = s => new DOMParser().parseFromString(s, 'application/xml');
+            const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+            const R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+            const doc = parse(docXml);
+            const rels = relsXml ? parse(relsXml) : null;
+            const relMap = {};
+            if (rels) Array.from(rels.getElementsByTagName('Relationship')).forEach(r => {
+                relMap[r.getAttribute('Id')] = r.getAttribute('Target');
+            });
+
+            // Lê atributo w:val de forma robusta (namespace ou prefixo)
+            const wVal = (el) => el?.getAttributeNS(W_NS, 'val') || el?.getAttribute('w:val') || '';
+
+            // Constrói mapa dinâmico de estilos de heading a partir de styles.xml
+            // Isso cobre estilos com nomes localizados (Titre1, Kop1, etc.) e estilos customizados
+            // que herdam de Heading1/2/3 via basedOn
+            const dynamicHeadingMap = {};
+            if (stylesXml) {
+                const stylesDoc = parse(stylesXml);
+                const styleEls = stylesDoc.getElementsByTagNameNS(W_NS, 'style');
+                // Passo 1: identificar quais styleIds são nativamente headings (tipo paragraph + name contém "heading")
+                const knownHeadingIds = new Set();
+                Array.from(styleEls).forEach(s => {
+                    const styleId = wVal(s) || s.getAttribute('w:styleId') || '';
+                    const nameEl = s.getElementsByTagNameNS(W_NS, 'name')[0];
+                    const name = (wVal(nameEl) || '').toLowerCase();
+                    const m = name.match(/^(?:heading|titre|kop|überschrift|título|heading)\s*(\d)/i);
+                    if (m) {
+                        knownHeadingIds.add(styleId);
+                        dynamicHeadingMap[styleId.toLowerCase()] = `h${m[1]}`;
+                    }
+                });
+                // Passo 2: estilos que herdam (basedOn) de um heading também são headings
+                Array.from(styleEls).forEach(s => {
+                    const styleId = wVal(s) || s.getAttribute('w:styleId') || '';
+                    const basedOn = wVal(s.getElementsByTagNameNS(W_NS, 'basedOn')[0]);
+                    if (basedOn && knownHeadingIds.has(basedOn) && !dynamicHeadingMap[styleId.toLowerCase()]) {
+                        dynamicHeadingMap[styleId.toLowerCase()] = dynamicHeadingMap[basedOn.toLowerCase()] || 'h2';
+                    }
+                });
+            }
+
+            // Constrói conjunto de estilos de parágrafo que são listas (sem precisar de w:numPr)
+            // Ex: "List Bullet", "Listpuces", "ListBullet", "Lijstopsomming", "ListaVietas"
+            const listStyleIds = new Set();
+            if (stylesXml) {
+                const stylesDoc = parse(stylesXml);
+                const styleEls2 = stylesDoc.getElementsByTagNameNS(W_NS, 'style');
+                const knownListIds = new Set();
+                // Passo 1: estilos cujo nome indica lista
+                Array.from(styleEls2).forEach(s => {
+                    const styleId = wVal(s) || s.getAttribute('w:styleId') || '';
+                    const nameEl = s.getElementsByTagNameNS(W_NS, 'name')[0];
+                    const name = (wVal(nameEl) || '').toLowerCase();
+                    if (/list\s*(bullet|number|paragraph|item)|listpuces|lijstopsomming|listavietas|aufzählung/i.test(name)) {
+                        listStyleIds.add(styleId);
+                        knownListIds.add(styleId);
+                    }
+                });
+                // Passo 2: estilos que herdam de um estilo de lista
+                Array.from(styleEls2).forEach(s => {
+                    const styleId = wVal(s) || s.getAttribute('w:styleId') || '';
+                    const basedOn = wVal(s.getElementsByTagNameNS(W_NS, 'basedOn')[0]);
+                    if (basedOn && knownListIds.has(basedOn)) listStyleIds.add(styleId);
+                });
+            }
+
+            // Verifica se um elemento de formatação está ativo (existe e não tem val="0" ou val="false")
+            const isActive = (rPr, localName) => {
+                const el = rPr?.getElementsByTagNameNS(W_NS, localName)[0];
+                if (!el) return false;
+                const v = wVal(el);
+                return v !== '0' && v !== 'false';
+            };
+
+            // Detecta bold/italic também via character styles (ex: w:rStyle Strong/Emphasis)
+            const isBoldViaStyle = (rPr) => {
+                const rStyle = wVal(rPr?.getElementsByTagNameNS(W_NS, 'rStyle')[0]);
+                return /^(strong|bold|gras|kursiv|fet|negrita|fett)$/i.test(rStyle);
+            };
+            const isItalicViaStyle = (rPr) => {
+                const rStyle = wVal(rPr?.getElementsByTagNameNS(W_NS, 'rStyle')[0]);
+                return /^(emphasis|italic|italique|cursiva|kursiv|nadruk)$/i.test(rStyle);
+            };
+
+            // Mapeamento de estilos de heading (inglês e localizações comuns)
+            const HEADING_MAP = {
+                'heading1': 'h1', 'heading2': 'h2', 'heading3': 'h3', 'heading4': 'h4',
+                'titre1': 'h1', 'titre2': 'h2', 'titre3': 'h3', 'titre4': 'h4',  // FR
+                'kop1': 'h1', 'kop2': 'h2', 'kop3': 'h3',                          // NL
+                'überschrift1': 'h1', 'überschrift2': 'h2', 'überschrift3': 'h3',  // DE
+                'título1': 'h1', 'título2': 'h2', 'título3': 'h3',                  // PT/ES
+            };
+
+            const renderInline = (container) => {
+                let acc = '';
+                Array.from(container.childNodes).forEach(n => {
+                    if (n.namespaceURI !== W_NS) return;
+                    if (n.localName === 'r') {
+                        const rPr = n.getElementsByTagNameNS(W_NS, 'rPr')[0];
+                        const bold = isActive(rPr, 'b') || isBoldViaStyle(rPr);
+                        const italic = isActive(rPr, 'i') || isItalicViaStyle(rPr);
+                        const strike = isActive(rPr, 'strike');
+                        let out = '';
+                        Array.from(n.childNodes).forEach(cn => {
+                            if (cn.namespaceURI !== W_NS) return;
+                            if (cn.localName === 't') out += cn.textContent;
+                            else if (cn.localName === 'br') out += '<br>';
+                            else if (cn.localName === 'tab') out += ' ';
+                            else if (cn.localName === 'softHyphen') out += '\u00AD';
+                        });
+                        if (out && out !== '<br>') {
+                            if (strike) out = `<s>${out}</s>`;
+                            if (italic) out = `<em>${out}</em>`;
+                            if (bold) out = `<strong>${out}</strong>`;
+                        }
+                        acc += out;
+                    } else if (n.localName === 'hyperlink') {
+                        const rid = n.getAttributeNS(R_NS, 'id') || n.getAttribute('r:id');
+                        const url = rid ? (relMap[rid] || '#') : '#';
+                        const inner = renderInline(n);
+                        if (inner) acc += `<a href="${url}">${inner}</a>`;
+                    }
+                });
+                return acc.trim();
+            };
+
+            // Detecta se um parágrafo é item de lista e qual nível
+            const getListInfo = (p) => {
+                const numPr = p.getElementsByTagNameNS(W_NS, 'numPr')[0];
+                if (!numPr) return null;
+                const ilvl = parseInt(wVal(numPr.getElementsByTagNameNS(W_NS, 'ilvl')[0])) || 0;
+                const numId = wVal(numPr.getElementsByTagNameNS(W_NS, 'numId')[0]);
+                return { level: ilvl, numId };
+            };
+
+            let html = '';
+            let listStack = []; // { numId, tag } - para rastrear listas abertas
+
+            const closeLists = (targetDepth = -1) => {
+                while (listStack.length > targetDepth + 1) {
+                    html += `</${listStack.pop().tag}>`;
+                }
+            };
+
+            Array.from(doc.getElementsByTagNameNS(W_NS, 'p')).forEach(p => {
+                const content = renderInline(p);
+                
+                // Detectar lista via numPr OU via estilo de parágrafo de lista
+                const listInfo = getListInfo(p);
+                const pStyleElCheck = p.getElementsByTagNameNS(W_NS, 'pStyle')[0];
+                const pStyleIdCheck = wVal(pStyleElCheck) || '';
+                const isListByStyle = !listInfo && listStyleIds.has(pStyleIdCheck);
+
+                if (listInfo || isListByStyle) {
+                    const level = listInfo?.level ?? 0;
+                    // Fechar listas mais profundas
+                    closeLists(level - 1);
+                    // Abrir nova lista se necessário
+                    if (listStack.length <= level) {
+                        const tag = 'ul';
+                        html += `<${tag}>`;
+                        listStack.push({ numId: listInfo?.numId ?? 'style', tag });
+                    }
+                    html += `<li>${content || ''}</li>`;
+                    return;
+                }
+                
+                // Fechar listas abertas se voltamos a parágrafo normal
+                closeLists();
+
+                if (!content) return;
+
+                const pStyleEl = p.getElementsByTagNameNS(W_NS, 'pStyle')[0];
+                const styleVal = wVal(pStyleEl).toLowerCase().replace(/\s+/g, '');
+                // dynamicHeadingMap (de styles.xml) tem precedência; HEADING_MAP é fallback estático
+                const tag = dynamicHeadingMap[styleVal] || HEADING_MAP[styleVal] || 'p';
+
+                html += `<${tag}>${content}</${tag}>`;
+            });
+
+            closeLists(); // Fecha qualquer lista ainda aberta
+
+            return sanitizeHTML(html);
+        }
+    };
+
+    // =========================================================================
+    // 3. ANALISADOR SEMÂNTICO (Smart Chunking + Legacy Support)
+    // =========================================================================
+    const SemanticAnalyzer = {
+        analyze(html) {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = html;
+            
+            // Normalização Estrutural (v2.4): Consertar templates com uso errado de tags
+            let blocksArray = [...tmp.querySelectorAll('p, h1, h2, h3, h4, ul, ol')];
+            
+            // 0. Converter Listas Falsas (parágrafos começando com traço/bullet)
+            let fakeListBuffer = [];
+            const flushFakeList = () => {
+                if (fakeListBuffer.length > 0) {
+                    const ul = document.createElement('ul');
+                    fakeListBuffer[0].parentNode.insertBefore(ul, fakeListBuffer[0]);
+                    fakeListBuffer.forEach(p => {
+                        const li = document.createElement('li');
+                        let inner = p.innerHTML;
+                        // Remove o marcador inicial mesmo se estiver dentro de tags
+                        inner = inner.replace(/^((?:\s*<[^>]+>\s*)*)[-•*–—]\s+/i, '$1');
+                        li.innerHTML = inner.trim();
+                        ul.appendChild(li);
+                        p.remove();
+                    });
+                    fakeListBuffer = [];
+                }
+            };
+
+            blocksArray.forEach(block => {
+                const tag = block.tagName.toLowerCase();
+                const text = block.textContent.trim();
+                
+                if (tag === 'p' && /^[-•*–—]\s+/.test(text)) {
+                    fakeListBuffer.push(block);
+                } else {
+                    flushFakeList();
+                }
+            });
+            flushFakeList();
+
+            // Atualizar os blocos após a criação de ULs
+            blocksArray = [...tmp.querySelectorAll('p, h1, h2, h3, h4, ul, ol')];
+
+            blocksArray.forEach(block => {
+                const tag = block.tagName.toLowerCase();
+                const textLen = block.textContent.trim().length;
+                
+                // A. Rebaixar falsos títulos (Headings longos usados como parágrafo no Word)
+                if (tag.match(/^h[1-6]$/i) && textLen > 120) {
+                    const p = document.createElement('p');
+                    p.innerHTML = block.innerHTML;
+                    block.replaceWith(p);
+                    // O restante do loop para este bloco é ignorado, já que ele foi rebaixado
+                    return;
+                }
+                
+                // B. Promover parágrafos em negrito absoluto para Headings (títulos disfarçados)
+                if (tag === 'p' && textLen > 0) {
+                    const inner = block.innerHTML.trim();
+                    if (/^(?:<strong>|<b>).*?(?:<\/strong>|<\/b>)$/i.test(inner) && !inner.includes('<br')) {
+                        const h3 = document.createElement('h3');
+                        h3.innerHTML = inner.replace(/<\/?(?:strong|b)[^>]*>/gi, '');
+                        block.replaceWith(h3);
+                    }
+                }
+            });
+            
+            // Re-selecionar após as modificações
+            const blocks = [...tmp.querySelectorAll('p, h1, h2, h3, h4, ul, ol')];
+            
+            const getText = el => {
+                const clone = el.cloneNode(true);
+                clone.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                return (clone.textContent || '').replace(/\u00a0/g, ' ').trim();
+            };
+            
+            const result = {
+                h1: '',
+                meta: {},
+                chunks: [],
+            };
+
+            let currentChunk = '';
+            // Máquina de estado para metadados multi-linha (label numa linha, valor na próxima)
+            let pendingMetaKey = null;
+            // Flag: quando true, estamos na seção de rodapé/SEO e não adicionamos mais content chunks
+            let inSeoFooter = false;
+            // Flag: quando true, o bloco atual pertence a uma imagem (Text + Image)
+            let isImageChunk = false;
+
+            const flushChunk = (isFinal = false, bypassOrphanRule = false) => {
+                if (currentChunk.trim()) {
+                    if (isFinal || bypassOrphanRule) {
+                        result.chunks.push(currentChunk.trim());
+                        currentChunk = '';
+                        isImageChunk = false;
+                        return;
+                    }
+                    
+                    // Prevenir títulos órfãos no final do chunk (ex: H3 seguido de imagem/marcador)
+                    const headingAtEnd = /(<h[1-6][^>]*>.*?<\/h[1-6]>)\s*$/i;
+                    const match = currentChunk.match(headingAtEnd);
+                    let orphanedHeading = '';
+                    
+                    if (match) {
+                        orphanedHeading = match[1];
+                        currentChunk = currentChunk.replace(headingAtEnd, '').trim();
+                    }
+                    
+                    if (currentChunk) {
+                        result.chunks.push(currentChunk);
+                    }
+                    
+                    currentChunk = orphanedHeading; // O título órfão inicia o próximo chunk
+                    isImageChunk = false;
+                }
+            };
+
+            // Mapa de rótulos multi-linha para chaves internas
+            const MULTILINE_META_LABELS = {
+                'meta title': 'title',
+                'meta description': 'description',
+                'og title': 'ogTitle',
+                'og description': 'ogDesc',
+                'internal url': 'url',
+                'canonical url': 'url',
+                'schema': '_schema', // ignorar
+            };
+
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                let text = getText(block);
+                const tag = block.tagName.toLowerCase();
+                if (!text) continue;
+
+                // ── Detectar início do rodapé de SEO / seção de artigos relacionados ────────
+                // Triggers: cabeçalho "SEO METADATA", "Ces articles peuvent vous intéresser",
+                // ou o padrão de tabela de artigos relacionados (linha isolada "Title" seguida de "URL")
+                const isFooterTrigger = 
+                    /^SEO\s*(METADATA|META)?$/i.test(text) ||
+                    /^(?:Ces articles peuvent vous int.ress|Related articles|Verwandte Artikel|Artigos relacionados|Sidebar Blocks?)/i.test(text) ||
+                    /^Component\s*:\s*Ces articles/i.test(text) ||
+                    // Linha que é EXATAMENTE "Title" ou "URL" — cabeçalho de tabela vazia de artigos relacionados
+                    /^(Title|URL|Titre|Lien)$/.test(text.trim());
+
+                if (isFooterTrigger) {
+                    flushChunk();
+                    inSeoFooter = true;
+                    pendingMetaKey = null;
+                    continue;
+                }
+
+                // ── No rodapé, apenas processar metadados multi-linha ─────────────────────
+                if (inSeoFooter) {
+                    // JSON schema — ignorar bloco inteiro
+                    if (text.startsWith('{') || text.startsWith('[{')) continue;
+                    // URLs absolutas avulsas — ignorar
+                    if (/^https?:\/\//i.test(text)) continue;
+                    
+                    // Verificar se é um rótulo de metadado multi-linha
+                    const labelKey = MULTILINE_META_LABELS[text.toLowerCase().trim()];
+                    if (labelKey !== undefined) {
+                        pendingMetaKey = labelKey; // próximo texto é o valor
+                        continue;
+                    }
+
+                    // Se há uma chave pendente, o texto atual é o valor
+                    if (pendingMetaKey) {
+                        if (pendingMetaKey !== '_schema') {
+                            if (pendingMetaKey === 'url') {
+                                let u = text.replace(/^https?:\/\/[^/]+/, '');
+                                result.meta[pendingMetaKey] = u || text;
+                            } else {
+                                result.meta[pendingMetaKey] = text;
+                            }
+                        }
+                        pendingMetaKey = null;
+                        continue;
+                    }
+
+                    // Tenta formato inline "Meta Title: valor" também no rodapé
+                    const mInline = text.match(/^(Meta title|Meta description|OG title|OG description|Internal URL|Canonical URL)\s*:\s*(.+)$/i);
+                    if (mInline) {
+                        const k = MULTILINE_META_LABELS[mInline[1].toLowerCase().trim()];
+                        if (k && k !== '_schema') result.meta[k] = mInline[2].trim();
+                    }
+                    continue; // tudo no rodapé é descartado do conteúdo
+                }
+
+                // ── Fora do rodapé: processamento normal ──────────────────────────────────
+
+                // Ignorar blocos de instrução genérica e campos de imagem/metadados
+                if (/^Add a block with the following info here/i.test(text) || 
+                    /^(Voor meer informação|Voor meer informatie|En savoir plus)$/i.test(text) ||
+                    /^(Image Position|IMAGE|ALT|Alt Text|Alt text|Image link|Article category|Internal note)\s*:/i.test(text)) {
+                    continue;
+                }
+
+                // Nota: [COMPONENT:] é tratado pelo MARKER_PAT abaixo (que faz flushChunk corretamente
+                // mesmo quando há conteúdo formatado após o marcador na mesma linha)
+
+                // 3.1 Extração de Metadados e H1
+                const mInternalTitle = text.match(/^Internal title\s*:\s*(.+)$/i);
+                if (mInternalTitle) { result.h1 = mInternalTitle[1].trim(); continue; }
+
+                const mH1 = text.match(/^H1\s*:?\s*(.+)$/i);
+                if (mH1) { if (!result.h1) result.h1 = mH1[1].trim(); continue; }
+                // h1 sempre é consumido: se ainda não temos h1, capturamos; se já temos,
+                // é breadcrumb/navegação e deve ser descartado (não vira conteúdo)
+                if (tag === 'h1') { if (!result.h1) result.h1 = text; continue; }
+
+                const mMetaTitle = text.match(/^(Meta title|Meta-title)\s*:\s*(.+)$/i);
+                if (mMetaTitle) { result.meta.title = mMetaTitle[2].trim(); continue; }
+                
+                const mMetaDesc = text.match(/^(Meta description|Meta-description)\s*:\s*(.+)$/i);
+                if (mMetaDesc) { result.meta.description = mMetaDesc[2].trim(); continue; }
+
+                const mOgTitle = text.match(/^(OG title|Og title)\s*:\s*(.+)$/i);
+                if (mOgTitle) { result.meta.ogTitle = mOgTitle[2].trim(); continue; }
+
+                const mOgDesc = text.match(/^(OG description|Og description)\s*:\s*(.+)$/i);
+                if (mOgDesc) { result.meta.ogDesc = mOgDesc[2].trim(); continue; }
+
+                // URL: campo explícito OU Source: (formato alternativo de DOCX)
+                const mUrl = text.match(/^(?:URL|Source)\s*:\s*(.+)$/i);
+                if (mUrl) {
+                    let u = mUrl[1].trim();
+                    u = u.replace(/^[A-Z]{2}:\s*/, '').replace(/^https?:\/\/[^/]+/, '');
+                    result.meta.url = u;
+                    continue;
+                }
+
+                // Formato multi-idioma do advanced.docx: "EN https://... BE-NL https://... NL https://..."
+                // Detecta blocos que têm pares LANG_CODE URL e extrai o path
+                const LANG_CODE_PAT = /\b(BE-NL|BE-FR|NL|FR|DE|EN|ES|IT|PT|AT|CH-FR|CH-DE|LU|DK|SE|NO|FI)\s+(https?:\/\/\S+)/gi;
+                const langUrlMatches = [...text.matchAll(LANG_CODE_PAT)];
+                if (langUrlMatches.length > 0) {
+                    if (!result.meta.url) {
+                        // Preferir NL/BE-NL (idioma principal); senão pega qualquer um
+                        const preferred = langUrlMatches.find(m => /^(NL|BE-NL)$/i.test(m[1])) || langUrlMatches[0];
+                        const rawUrl = preferred[2];
+                        result.meta.url = rawUrl.replace(/^https?:\/\/[^/]+/, '') || rawUrl;
+                    }
+                    continue; // bloco inteiro é metadado — não vira conteúdo
+                }
+
+                // Linha solitária que é apenas uma URL absoluta (lixo de rodapé/template)
+                if (/^https?:\/\/\S+$/.test(text.trim())) continue;
+
+                if (/^(Meta title|Meta description|OG title|OG description|URL|Source)\s*:/i.test(text)) {
+                    continue; // Pega linhas vazias de meta
+                }
+
+                // Regra Específica: Limite do Bloco de Imagem (Text + Image)
+                if (isImageChunk) {
+                    if (tag.match(/^h[1-6]$/i)) {
+                        if (!currentChunk.trim()) {
+                            // Se o título veio logo após o marcador de imagem (acima do parágrafo),
+                            // ele pertence ao final do bloco Text anterior!
+                            block.innerHTML = block.innerHTML.replace(/<\/?(?:strong|b)[^>]*>/gi, '');
+                            if (result.chunks.length > 0) {
+                                result.chunks[result.chunks.length - 1] += ' ' + block.outerHTML;
+                            }
+                            continue;
+                        } else {
+                            // Se o título veio abaixo do parágrafo da imagem, fecha a imagem.
+                            // O título vai pro início do próximo bloco Text.
+                            flushChunk();
+                        }
+                    } else if (tag === 'p' && currentChunk.includes('<p>')) {
+                        // Se já temos 1 parágrafo na imagem, o próximo quebra o bloco
+                        flushChunk();
+                    }
+                }
+
+                // Regra Específica: Isolar a Introdução
+                // O primeiro bloco termina quando encontramos o primeiro subtítulo real do corpo do texto
+                if (result.chunks.length === 0 && tag.match(/^h[2-6]$/i) && currentChunk.trim()) {
+                    flushChunk();
+                }
+
+                // 3.2 Detecção de Marcadores Legados
+                // Os marcadores podem estar no início OU no meio do parágrafo (separados por <br>)
+                let inner = block.innerHTML;
+                // MARKER_PAT: detecta marcadores legados (Text block 1, Intro, Alt-tag, etc.)
+                // e marcadores no formato novo ([COMPONENT: ...], [BLOCK: ...])
+                // NOTA: Alt-?tag usa [^<]* GREEDY para consumir todo o texto do alt,
+                // evitando que o alt-text fique como resíduo após o split.
+                const MARKER_PAT = '(?:<strong>|<b>)?(?:Intro(?:\\s*\\(H3\\))?|Text block \\d+|Image\\+Text \\d+(?:\\s*\\(summary\\))?|Final text block|Alt-?tag\\s*:[^<]*|\\[COMPONENT:[^\\]]*\\]|\\[BLOCK:[^\\]]*\\])(?:</strong>|</b>)?\\s*:?(?:\\s|<br\\s*/?>)*';
+                const markerAnywhere = new RegExp(MARKER_PAT, 'i');
+                const markerAtStart = new RegExp('^' + MARKER_PAT, 'i');
+
+                if (markerAnywhere.test(inner)) {
+                    const splitRegex = new RegExp(MARKER_PAT, 'gi');
+                    const parts = inner.split(splitRegex).map(p => p.trim()).filter(p => p.replace(/<[^>]+>/g, '').trim());
+                    const hasImageMarker = /(?:Image\+Text|Alt-?tag)/i.test(inner);
+
+                    if (parts.length === 0) {
+                        flushChunk(false, hasImageMarker);
+                        if (hasImageMarker) isImageChunk = true;
+                        continue;
+                    }
+
+                    if (markerAtStart.test(inner)) {
+                        flushChunk(false, hasImageMarker);
+                        if (hasImageMarker) isImageChunk = true;
+                        block.innerHTML = parts[0];
+                        text = getText(block);
+                        inner = parts[0];
+                        for (let j = 1; j < parts.length; j++) {
+                            if (currentChunk) flushChunk();
+                            currentChunk = `<p>${parts[j]}</p>`;
+                        }
+                    } else {
+                        block.innerHTML = parts[0];
+                        text = getText(block);
+                        inner = parts[0];
+                        if (text) {
+                            currentChunk += block.outerHTML;
+                            text = '';
+                        }
+                        flushChunk();
+                        for (let j = 1; j < parts.length; j++) {
+                            if (j > 1) flushChunk();
+                            currentChunk = `<p>${parts[j]}</p>`;
+                        }
+                    }
+                }
+
+                // Acumular texto limpo
+                if (text) {
+                    if (!result.h1 && !result.meta.title && currentChunk === '' && result.chunks.length === 0 && tag.match(/^h[1-3]$|^p$/)) {
+                        if (tag.match(/^h[1-2]$/)) result.h1 = text;
+                    }
+                    currentChunk += block.outerHTML;
+                }
+            }
+
+            flushChunk(true); // Final flush processa tudo o que sobrou (incluindo possíveis headings)
+
+            // 3.3 Pós-processamento: Promoção do título real do artigo
+            //
+            // Regra: Se chunks[0] for um parágrafo único com menos de 120 chars,
+            // sem ponto final e sem o padrão "campo: valor", ele é o H1 real.
+            if (result.chunks.length > 0 && result.h1) {
+                // Remover o H1 do corpo se ele for a primeira coisa do primeiro chunk
+                const escapedH1 = Array.from(result.h1).map(c => '.+*?^$()[]{}|\\'.includes(c) ? '\\' + c : c).join('');
+                result.chunks[0] = result.chunks[0].replace(new RegExp(`^(?:<h[1-3][^>]*>\\s*(?:<strong>|<b>)?\\s*|<p(?:[^>]*)>\\s*(?:<strong>|<b>)?\\s*)${escapedH1}(?:\\s*</strong>|</b>)?\\s*(?:</p>|</h[1-3]>)`, 'i'), '').trim();
+            }
+            if (result.chunks.length > 0) {
+                // Post-processing: O PRIMEIRO BLOCO INTEIRO DEVE SER H3 (Requisito do Drupal)
+                const firstChunkDiv = document.createElement('div');
+                firstChunkDiv.innerHTML = result.chunks[0];
+                
+                // Converte todos os parágrafos (<p>) do primeiro bloco em <h3>
+                firstChunkDiv.querySelectorAll('p').forEach(p => {
+                    const h3 = document.createElement('h3');
+                    h3.innerHTML = p.innerHTML.replace(/<\/?(?:strong|b)[^>]*>/gi, '');
+                    p.replaceWith(h3);
+                });
+                result.chunks[0] = firstChunkDiv.innerHTML;
+
+                // Rotina normal de extração de H1 se ainda necessário
+                const firstChunkEls = firstChunkDiv.querySelectorAll('p, h1, h2, h3, h4');
+                
+                if (firstChunkEls.length === 1) {
+                    const candidate = getText(firstChunkEls[0]);
+                    // Rejeita se parece com "Campo: valor" (prefixo de metadado)
+                    const looksLikeField = /^[\w\s]{2,30}:\s*\S/.test(candidate);
+                    const isTitleLike = candidate.length > 5 
+                        && candidate.length < 120 
+                        && !candidate.includes('.') 
+                        && !looksLikeField;
+                    
+                    if (isTitleLike) {
+                        result.h1 = candidate;
+                        result.chunks.shift();
+                    }
+                }
+            }
+
+            // Se ainda não temos H1, pega do primeiro chunk como último recurso
+            if (!result.h1 && result.chunks.length > 0) {
+                const plain = document.createElement('div');
+                plain.innerHTML = result.chunks[0];
+                const firstEl = plain.querySelector('p, h1, h2, h3, h4') || plain.firstElementChild;
+                if (firstEl) {
+                    result.h1 = getText(firstEl);
+                    firstEl.remove();
+                    result.chunks[0] = plain.innerHTML.trim();
+                    if (!result.chunks[0].replace(/<[^>]+>/g, '').trim()) {
+                        result.chunks.shift();
+                    }
+                }
+            }
+
+            if (!result.meta.title) result.meta.title = result.meta.ogTitle || result.h1;
+            if (!result.meta.description) result.meta.description = result.meta.ogDesc || '';
+            
+            if (!result.meta.description && result.chunks[0]) {
+                const plain = document.createElement('div');
+                plain.innerHTML = result.chunks[0];
+                plain.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                result.meta.description = (plain.textContent || '').slice(0, 160).trim() + '...';
+            }
+
+            return result;
+        }
+    };
+
+    // =========================================================================
+    // 4. DRUPAL INJECTOR (Sem IDs fixos, apenas descobertas dinâmicas)
+    // =========================================================================
+    const DrupalInjector = {
+        async inject(data, logger) {
+            const setVal = (selectors, val, name) => {
+                const els = document.querySelectorAll(selectors);
+                if (els.length > 0) {
+                    els.forEach(el => {
+                        el.value = val;
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.style.boxShadow = '0 0 8px #2a6df5';
+                    });
+                    logger(`✅ ${name} injetado em ${els.length} campo(s).`);
+                } else {
+                    logger(`⚠️ Não foi possível localizar campo para: ${name}`);
+                }
+            };
+
+            // 4.1 Injeta Metadados Básicos e H1
+            setVal('input[name="title[0][value]"], input[data-drupal-selector*="title-0-value"], input[name*="internal_title"]', data.h1, 'H1 (Internal Title)');
+            setVal('input[name*="[basic][title]"], input[name*="meta_tags"][name*="title"]', data.meta.title, 'Meta Title');
+            setVal('textarea[name*="[basic][description]"], textarea[name*="meta_tags"][name*="description"]', data.meta.description, 'Meta Description');
+            setVal('input[name*="[open_graph][og_title]"]', data.meta.title, 'OG Title');
+            setVal('textarea[name*="[open_graph][og_description]"]', data.meta.description, 'OG Description');
+            if (data.meta.url) setVal('input[name*="alias"], input[data-drupal-selector*="edit-path"]', data.meta.url, 'URL Alias');
+
+            // 4.2 Abrir todos os Paragraphs Fechados
+            logger('⏳ Abrindo blocos de parágrafo fechados...');
+            const editBtns = document.querySelectorAll('.paragraphs-subform input[value*="Edit"], .paragraphs-subform input[value*="Édit"], .paragraphs-subform input[value*="Bewerken"], button.paragraphs-icon-button-edit');
+            editBtns.forEach(b => { try { b.click(); } catch (e) {} });
+            
+            if (editBtns.length) await new Promise(r => setTimeout(r, 1000));
+
+            // 4.3 Encontrar CKEditors e Injetar Chunks Sequencialmente
+            const editors = document.querySelectorAll('.ck-editor__editable[role="textbox"], .ck-content[contenteditable="true"]');
+            
+            const getCKE5Registry = () => (
+                window.Drupal?.CKEditor5Instances || window.Drupal?.ckeditor5Instances || window.Drupal?.CKEditor5?.instances || window.CKEditor5?.instances || null
+            );
+
+            const reg = getCKE5Registry();
+            let injectedCount = 0;
+
+            for (let i = 0; i < data.chunks.length && i < editors.length; i++) {
+                const editable = editors[i];
+                const html = data.chunks[i];
+                let success = false;
+
+                // Tenta via API do CKEditor5 primeiro
+                if (reg && typeof reg.forEach === 'function') {
+                    reg.forEach((inst) => {
+                        const edNode = inst?.ui?.getEditableElement?.();
+                        if (edNode === editable || edNode?.contains(editable)) {
+                            inst.setData(html);
+                            success = true;
+                        }
+                    });
+                } else if (reg && reg instanceof Map) {
+                    for (const [key, inst] of reg.entries()) {
+                        const edNode = inst?.ui?.getEditableElement?.();
+                        if (edNode === editable || key === editable || edNode?.contains(editable)) {
+                            inst.setData(html);
+                            success = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback document.execCommand
+                if (!success) {
+                    editable.focus();
+                    try { document.execCommand('selectAll', false, null); } catch {}
+                    success = document.execCommand('insertHTML', false, html);
+                    editable.dispatchEvent(new InputEvent('input', { bubbles: true }));
+                }
+
+                if (success) {
+                    injectedCount++;
+                    editable.style.boxShadow = '0 0 8px #2a6df5';
+                }
+            }
+
+            logger(`✅ ${injectedCount} blocos de conteúdo injetados em Paragraphs/CKEditor.`);
+            if (data.chunks.length > editors.length) {
+                logger(`⚠️ Sobraram ${data.chunks.length - editors.length} blocos de conteúdo. Crie mais blocos no Drupal se necessário.`);
+            }
+        }
+    };
+
+    // =========================================================================
+    // 5. UI MANAGER (Overlay Moderno)
+    // =========================================================================
+    const UIManager = {
+        init() {
+            const ID = 'nppe-modern-overlay';
+            document.getElementById(ID)?.remove();
+            
+            const css = `
+                #${ID} { position: fixed; inset: 0; z-index: 2147483647; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
+                #${ID} .box { width: min(900px, 95vw); max-height: 90vh; background: #161b22; color: #c9d1d9; border-radius: 12px; box-shadow: 0 16px 40px rgba(0,0,0,0.8); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #30363d; }
+                #${ID} .hd { padding: 16px 20px; background: #0d1117; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+                #${ID} .hd h2 { margin: 0; font-size: 18px; font-weight: 600; color: #58a6ff; }
+                #${ID} .bd { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; }
+                #${ID} .file-area { display: flex; align-items: center; gap: 12px; background: #0d1117; padding: 16px; border-radius: 8px; border: 1px dashed #30363d; }
+                #${ID} input[type="file"] { color: #8b949e; }
+                #${ID} button { background: #238636; color: #fff; border: 1px solid rgba(240,246,252,0.1); border-radius: 6px; padding: 6px 16px; font-size: 14px; font-weight: 500; cursor: pointer; transition: 0.2s; }
+                #${ID} button:hover { background: #2ea043; }
+                #${ID} button.btn-secondary { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+                #${ID} button.btn-secondary:hover { background: #30363d; }
+                #${ID} .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+                #${ID} .panel { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+                #${ID} .panel h3 { margin: 0 0 10px 0; font-size: 14px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+                #${ID} .preview-item { margin-bottom: 8px; font-size: 13px; border-bottom: 1px solid #21262d; padding-bottom: 8px; }
+                #${ID} .preview-item strong { color: #58a6ff; }
+                #${ID} .chunks-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; }
+                #${ID} .chunk-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-size: 12px; }
+                #${ID} .log-area { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; color: #8b949e; white-space: pre-wrap; min-height: 80px; }
+                #${ID} .actions { padding: 16px 20px; background: #0d1117; border-top: 1px solid #30363d; display: flex; justify-content: flex-end; gap: 12px; }
+            `;
+            
+            const style = document.createElement('style');
+            style.textContent = css;
+            document.head.appendChild(style);
+
+            const wrap = document.createElement('div');
+            wrap.id = ID;
+            wrap.innerHTML = `
+                <div class="box">
+                    <div class="hd">
+                        <h2>Drupal Auto-Filler</h2>
+                        <button class="btn-secondary" id="btn-close">✕</button>
+                    </div>
+                    <div class="bd">
+                        <div class="file-area">
+                            <input type="file" id="docx-input" accept=".docx">
+                            <button id="btn-analyze">Analisar DOCX</button>
+                        </div>
+                        
+                        <div class="grid">
+                            <div class="panel">
+                                <h3>Metadados & SEO</h3>
+                                <div id="meta-preview">
+                                    <div class="preview-item">Aguardando arquivo...</div>
+                                </div>
+                            </div>
+                            <div class="panel">
+                                <h3>Blocos Encontrados (Chunks)</h3>
+                                <div id="chunks-preview" class="chunks-list">
+                                    <div class="chunk-box">Nenhum bloco extraído.</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="panel">
+                            <h3>Logs de Execução</h3>
+                            <div class="log-area" id="log-console">Pronto. Selecione um arquivo DOCX.</div>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button class="btn-secondary" id="btn-cancel">Cancelar</button>
+                        <button id="btn-inject" disabled>Injetar no Drupal</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(wrap);
+
+            this.bindEvents(wrap);
+        },
+
+        log(msg) {
+            const consoleEl = document.getElementById('log-console');
+            if (consoleEl) {
+                consoleEl.textContent += '\n' + msg;
+                consoleEl.scrollTop = consoleEl.scrollHeight;
+            }
+        },
+
+        bindEvents(wrap) {
+            let parsedData = null;
+
+            document.getElementById('btn-close').onclick = () => wrap.remove();
+            document.getElementById('btn-cancel').onclick = () => wrap.remove();
+
+            document.getElementById('btn-analyze').onclick = async () => {
+                const fileInput = document.getElementById('docx-input');
+                if (!fileInput.files.length) {
+                    this.log('⚠️ Selecione um arquivo .docx primeiro.');
+                    return;
+                }
+                
+                this.log('⏳ Extraindo DOCX e gerando HTML...');
+                try {
+                    const html = await DocxExtractor.extract(fileInput.files[0]);
+                    this.log('✅ HTML extraído. Executando chunking semântico...');
+                    
+                    parsedData = SemanticAnalyzer.analyze(html);
+                    
+                    // Atualiza a UI
+                    document.getElementById('meta-preview').innerHTML = `
+                        <div class="preview-item"><strong>H1:</strong> ${parsedData.h1 || 'Não detectado'}</div>
+                        <div class="preview-item"><strong>Meta Title:</strong> ${parsedData.meta.title || 'Não detectado'}</div>
+                        <div class="preview-item"><strong>Meta Desc:</strong> ${parsedData.meta.description || 'Não detectado'}</div>
+                        <div class="preview-item"><strong>URL:</strong> ${parsedData.meta.url || 'Não detectado'}</div>
+                    `;
+
+                    document.getElementById('chunks-preview').innerHTML = parsedData.chunks.map((c, i) => {
+                        const plain = document.createElement('div');
+                        // Garante que espaços existam entre parágrafos na prévia
+                        plain.innerHTML = c.replace(/<\/(p|h[1-6]|li|div)>/gi, ' </$1>');
+                        plain.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                        return `<div class="chunk-box"><strong>Bloco ${i + 1}</strong>: ${(plain.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 100)}...</div>`;
+                    }).join('');
+
+                    this.log(`✅ Análise concluída (v2.2). Encontrados ${parsedData.chunks.length} blocos de conteúdo.`);
+                    document.getElementById('btn-inject').disabled = false;
+                } catch (e) {
+                    console.error(e);
+                    this.log(`❌ Erro: ${e.message}`);
+                }
+            };
+
+            document.getElementById('btn-inject').onclick = async () => {
+                if (!parsedData) return;
+                this.log('🚀 Iniciando injeção dinâmica no Drupal...');
+                try {
+                    await DrupalInjector.inject(parsedData, this.log);
+                    this.log('🎉 Finalizado com sucesso!');
+                } catch (e) {
+                    console.error(e);
+                    this.log(`❌ Erro durante a injeção: ${e.message}`);
+                }
+            };
+        }
+    };
+
+    // Inicializa a UI
+    UIManager.init();
+})();
