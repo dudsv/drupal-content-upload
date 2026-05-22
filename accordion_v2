@@ -1,0 +1,504 @@
+/**
+ * Accordion V2 Module
+ * 
+ * Este arquivo isola a lógica de extração de FAQ (Perguntas e Respostas)
+ * e a injeção automatizada na interface do Drupal usando o componente Accordion v2.
+ */
+const AccordionV2Module = {
+    
+    // =========================================================================
+    // 1. PROCESSADOR DE FAQ (DOCX HTML -> JSON)
+    // =========================================================================
+    FAQProcessor: {
+        /**
+         * Processa os blocos HTML extraídos e separa o conteúdo regular do FAQ.
+         * @param {Element[]} blocks - Array de elementos DOM (p, h2, ul, etc.)
+         * @param {boolean} forceFaq - Se true, assume que já está dentro de um bloco FAQ.
+         * @returns {Object} { regularBlocks, faqTitleBlock, faqItems }
+         */
+        extract(blocks, forceFaq = false) {
+            let inFaq = forceFaq;
+            let regularBlocks = [];
+            let faqTitleBlock = null;
+            let faqItems = [];
+            let currentItem = null;
+
+            // Remove espaços invisíveis, ZWSP e whitespace no final para checar interrogação
+            const cleanText = el => (el.textContent || '').trim().replace(/[\u200B-\u200D\uFEFF\s]+$/g, '');
+
+            for (let block of blocks) {
+                const text = cleanText(block);
+                if (!text) continue;
+
+                // Detecta o título do FAQ
+                if (!inFaq && /^FAQ$/i.test(text)) {
+                    inFaq = true;
+                    faqTitleBlock = block; // Guarda para anexar ao último chunk regular
+                    continue;
+                }
+                
+                // Se forceFaq for true, e o bloco for literalmente "FAQ", ignoramos para não virar pergunta
+                if (forceFaq && /^FAQ$/i.test(text)) {
+                    continue;
+                }
+
+                if (!inFaq) {
+                    regularBlocks.push(block);
+                } else {
+                    // Heurística de Pergunta: Termina com '?' ou é um Heading H2-H6
+                    const isQuestion = /\?$/.test(text) || /^H[2-6]$/i.test(block.tagName);
+                    
+                    if (isQuestion) {
+                        // Salva o item anterior se existir
+                        if (currentItem) {
+                            faqItems.push(currentItem);
+                        }
+                        // O Drupal Accordion v2 usa um campo de input text para o título, 
+                        // portanto removemos tags HTML e pegamos apenas o texto puro.
+                        currentItem = {
+                            questionText: text, 
+                            answerHtml: ''
+                        };
+                    } else {
+                        // Se não é pergunta, é resposta. Adiciona ao HTML da resposta do item atual.
+                        if (currentItem) {
+                            currentItem.answerHtml += block.outerHTML;
+                        } else {
+                            // Caso raro: Encontrou texto após o título "FAQ" sem parecer uma pergunta.
+                            // Cria um item fallback com o texto como pergunta.
+                            currentItem = {
+                                questionText: text,
+                                answerHtml: ''
+                            };
+                        }
+                    }
+                }
+            }
+
+            // Push do último item
+            if (currentItem) {
+                faqItems.push(currentItem);
+            }
+
+            return { regularBlocks, faqTitleBlock, faqItems };
+        }
+    },
+
+    // =========================================================================
+    // 2. INJETOR AUTOMÁTICO DO DRUPAL (UI Automation)
+    // =========================================================================
+    Injector: {
+        async wait(ms) {
+            return new Promise(r => setTimeout(r, ms));
+        },
+
+        /**
+         * Simula o clique do usuário num botão do Drupal, abrindo dropdowns se necessário.
+         */
+        async clickDrupalButton(btn) {
+            if (!btn) return;
+            
+            // Verifica se está dentro de um dropbutton que precisa ser aberto
+            const dropWrapper = btn.closest('.dropbutton-wrapper');
+            if (dropWrapper) {
+                // Força a abertura do menu adicionando a classe "open" conforme instrução do usuário
+                dropWrapper.classList.add('open');
+                await this.wait(100); // Aguarda o DOM/CSS aplicar a visibilidade
+            }
+            
+            // Dispara mousedown e click no botão alvo
+            btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            await this.wait(100); // Delay pro Drupal processar o mousedown
+            btn.click();
+        },
+
+        /**
+         * Aguarda o aparecimento de novos elementos na DOM após uma ação AJAX.
+         */
+        async waitForNewElement(selector, oldCount, timeout = 15000) {
+            const t0 = performance.now();
+            return new Promise((resolve, reject) => {
+                const tick = () => {
+                    const els = document.querySelectorAll(selector);
+                    if (els.length > oldCount) {
+                        return resolve(els[els.length - 1]); // Retorna o último recém-criado
+                    }
+                    if (performance.now() - t0 > timeout) {
+                        return reject(new Error(`Timeout esperando novo elemento: ${selector}`));
+                    }
+                    setTimeout(tick, 200); // Polling leve
+                };
+                tick();
+            });
+        },
+
+        /**
+         * Preenche o CKEditor5 ou fallback Textarea
+         */
+        injectCKEditor(wrapper, htmlContent) {
+            const textarea = wrapper.querySelector('textarea');
+            if (!textarea) return false;
+
+            const editable = wrapper.querySelector('.ck-editor__editable[role="textbox"], .ck-content[contenteditable="true"]');
+            const ck5Id = textarea.getAttribute('data-ckeditor5-id');
+            let success = false;
+
+            const getCKE5Registry = () => (
+                window.Drupal?.CKEditor5Instances || 
+                window.Drupal?.ckeditor5Instances || 
+                window.Drupal?.CKEditor5?.instances || 
+                window.CKEditor5?.instances || null
+            );
+
+            const reg = getCKE5Registry();
+
+            // Tenta via API Global do CKEditor 5
+            if (reg && typeof reg.forEach === 'function') {
+                reg.forEach((inst) => {
+                    if (inst?.ui?.getEditableElement?.() === editable) {
+                        inst.setData(htmlContent);
+                        success = true;
+                    }
+                });
+            } else if (reg && reg instanceof Map) {
+                for (const [key, inst] of reg.entries()) {
+                    if (inst?.ui?.getEditableElement?.() === editable || key === ck5Id) {
+                        inst.setData(htmlContent);
+                        success = true;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback via execCommand se o CKEditor já estiver renderizado mas a API falhou
+            if (!success && editable) {
+                editable.focus();
+                try { document.execCommand('selectAll', false, null); } catch {}
+                document.execCommand('insertHTML', false, htmlContent);
+                editable.dispatchEvent(new InputEvent('input', { bubbles: true }));
+                success = true;
+            } else if (!editable) {
+                // Se a UI do editor ainda não montou, preenche a textarea padrão
+                textarea.value = htmlContent;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                textarea.dispatchEvent(new Event('change', { bubbles: true }));
+                success = true;
+            }
+
+            if (success && editable) {
+                editable.style.boxShadow = '0 0 8px #2a6df5';
+            }
+            return success;
+        },
+
+        /**
+         * Executa o macro de injeção dos itens de FAQ
+         */
+        async inject(faqData, logger = console.warn) {
+            try {
+                alert("Iniciando Script de FAQ!"); // DEBUG
+                if (!faqData || !faqData.items || faqData.items.length === 0) {
+                    alert("ERRO: Dados vazios");
+                    return;
+                }
+
+                logger(`[FAQ] Encontrado FAQ. Iniciando criação do Accordion v2...`);
+
+                const addAccordionBtn = document.querySelector('input[value="Add Accordion v2"]') || 
+                                        document.querySelector('input[name*="accordion_v2_add_more"]');
+                
+                if (!addAccordionBtn) {
+                    alert("Botão 'Add Accordion v2' não foi encontrado no HTML da página!");
+                    throw new Error('Botão "Add Accordion v2" não encontrado.');
+                }
+
+                const rootComponentsSelector = 'div[data-drupal-selector^="edit-field-article-lp-components-"][class*="js-form-wrapper"]';
+                const oldComponentsCount = document.querySelectorAll(rootComponentsSelector).length;
+
+                await this.clickDrupalButton(addAccordionBtn);
+
+                logger(`[FAQ] Aguardando módulo Accordion v2 carregar via AJAX...`);
+            const novoAccordionWrapper = await this.waitForNewElement(rootComponentsSelector, oldComponentsCount, 20000);
+            
+            // Localizar o wrapper interno correto que possui os botões "Add Accordion Item v2"
+            const accordionRoot = novoAccordionWrapper.closest('.js-form-wrapper');
+            logger(`[FAQ] Módulo Accordion v2 criado! Iniciando injeção de itens...`);
+
+            // Iterar sobre cada Pergunta/Resposta
+            for (let i = 0; i < faqData.items.length; i++) {
+                const item = faqData.items[i];
+                logger(`[FAQ] Criando pergunta ${i + 1}/${faqData.items.length}...`);
+
+                // Estratégia Baseada no Título: Toda pergunta V2 tem um input de título.
+                // Vamos procurar o último título na página.
+                let titleInput = null;
+
+                if (i === 0) {
+                    const allTitlesGlobally = document.querySelectorAll('input[name*="[field_accordion_item_v2_title][0][value]"]');
+                    const lastTitle = allTitlesGlobally[allTitlesGlobally.length - 1];
+                    if (lastTitle && !lastTitle.value) {
+                        logger(`[FAQ] Usando item 1 pré-existente vazio.`);
+                        titleInput = lastTitle;
+                    }
+                }
+
+                if (!titleInput) {
+                    // Precisamos criar um novo item clicando no botão "Add Accordion Item v2"
+                    const allAddItemBtns = Array.from(document.querySelectorAll('input[type="submit"]')).filter(b => 
+                        b.value.toLowerCase().includes('accordion item') || b.name.includes('accordion_item_v2_add_more')
+                    );
+                    
+                    const addItemBtn = allAddItemBtns[allAddItemBtns.length - 1];
+                    if (!addItemBtn) throw new Error('Botão "Add Accordion Item v2" não encontrado na página.');
+
+                    const oldTitlesCount = document.querySelectorAll('input[name*="[field_accordion_item_v2_title][0][value]"]').length;
+
+                    await this.clickDrupalButton(addItemBtn);
+
+                    // Esperar o input de título novo carregar via AJAX
+                    titleInput = await this.waitForNewElement('input[name*="[field_accordion_item_v2_title][0][value]"]', oldTitlesCount, 20000);
+                }
+
+                // 1. Preencher o Título (Pergunta)
+                if (titleInput) {
+                    titleInput.value = item.questionText;
+                    titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    titleInput.dispatchEvent(new Event('change', { bubbles: true }));
+                } else {
+                    throw new Error(`Campo de título não encontrado para a pergunta ${i + 1}`);
+                }
+
+                // Subir na DOM a partir do Title para encontrar a "caixa" (wrapper) deste item específico
+                let newItemWrapper = titleInput.parentElement;
+                let addTextBtn = null;
+                
+                while (newItemWrapper && newItemWrapper !== document.body) {
+                    const textBtns = Array.from(newItemWrapper.querySelectorAll('input[type="submit"]')).filter(b => {
+                        const val = b.value.toLowerCase();
+                        return val.includes('text') && !val.includes('image'); // ignora Text+Image
+                    });
+                    
+                    if (textBtns.length > 0) {
+                        addTextBtn = textBtns[textBtns.length - 1]; // pega o último
+                        break;
+                    }
+                    newItemWrapper = newItemWrapper.parentElement;
+                }
+                
+                if (!addTextBtn) {
+                    throw new Error(`Botão "Add Content: Text" não encontrado próximo ao item ${i+1}.`);
+                }
+
+                // Aplicar a instrução do usuário: Forçar o "open" no dropbutton que contém esse botão
+                const dropWrapper = addTextBtn.closest('.dropbutton-wrapper');
+                if (dropWrapper) {
+                    dropWrapper.classList.add('open');
+                }
+
+                const oldTextCount = document.querySelectorAll('.ck-editor__editable, textarea').length;
+
+                await this.clickDrupalButton(addTextBtn);
+
+                // Esperar a área de texto (textarea/ckeditor) carregar
+                await this.wait(2000); // Wait estático para dar tempo do AJAX de texto montar
+                
+                // 3. Preencher a Resposta no CKEditor5
+                // Damos um leve delay extra aqui pro CKEditor inicializar na DOM completamente
+                await this.wait(500);
+                this.injectCKEditor(newItemWrapper, item.answerHtml);
+
+                await this.wait(300); // Breve respiro entre requisições AJAX
+            }
+
+            logger(`[FAQ] ✅ Todos os ${faqData.items.length} itens do FAQ foram criados com sucesso!`);
+            alert(`FAQ Injetado com sucesso!`);
+            
+            } catch (err) {
+                logger(`[FAQ] ERRO FATAL: ${err.message}`);
+                alert(`Erro no FAQ: ${err.message}`);
+            }
+        }
+    },
+
+    // =========================================================================
+    // 3. INTERFACE VISUAL (Painel Flutuante Independente)
+    // =========================================================================
+    UI: {
+        init() {
+            // Evita criar múltiplos painéis se rodar várias vezes
+            if (document.getElementById('faq-injector-panel')) {
+                document.getElementById('faq-injector-panel').remove();
+            }
+
+            const panel = document.createElement('div');
+            panel.id = 'faq-injector-panel';
+            panel.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 400px;
+                background: #f8f9fa;
+                border: 2px solid #007bff;
+                border-radius: 8px;
+                padding: 15px;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+                z-index: 999999;
+                font-family: Arial, sans-serif;
+            `;
+
+            panel.innerHTML = `
+                <h3 style="margin-top:0; margin-bottom: 10px; font-size: 16px; color: #333;">🤖 Automador de FAQ (Accordion v2)</h3>
+                <p style="font-size: 12px; color: #666; margin-bottom: 10px; line-height: 1.4;">Copie as perguntas e respostas direto do Word e cole na caixa abaixo. O formato Rich Text será preservado.</p>
+                
+                <div id="faq-content-editable" contenteditable="true" style="
+                    width: 100%;
+                    height: 250px;
+                    border: 1px solid #ccc;
+                    background: #fff;
+                    overflow-y: auto;
+                    padding: 10px;
+                    box-sizing: border-box;
+                    font-size: 13px;
+                    margin-bottom: 10px;
+                    color: #000;
+                " placeholder="Cole o texto aqui..."></div>
+                
+                <button id="faq-btn-inject" style="
+                    width: 100%;
+                    padding: 12px;
+                    background: #28a745;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    font-size: 14px;
+                    transition: background 0.3s;
+                ">🚀 Injetar FAQ no Drupal</button>
+                
+                <button id="faq-btn-close" style="
+                    position: absolute;
+                    top: 10px;
+                    right: 10px;
+                    background: none;
+                    border: none;
+                    font-size: 16px;
+                    cursor: pointer;
+                    color: #999;
+                ">✖</button>
+            `;
+
+            document.body.appendChild(panel);
+
+            document.getElementById('faq-btn-close').onclick = () => panel.remove();
+            
+            document.getElementById('faq-btn-inject').onclick = async () => {
+                const editor = document.getElementById('faq-content-editable');
+                const rawHtml = editor.innerHTML.trim();
+                
+                if (!rawHtml || rawHtml === '<br>') {
+                    alert("⚠️ A caixa de texto está vazia! Cole o FAQ primeiro.");
+                    return;
+                }
+
+                const btn = document.getElementById('faq-btn-inject');
+                
+                try {
+                    btn.innerText = "Processando semântica...";
+                    btn.disabled = true;
+                    btn.style.background = "#6c757d";
+
+                    // 1. Transformar o HTML colado em blocos DOM estruturados
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = rawHtml;
+
+                    // A) Limpar sujeira do Word/Google Docs
+                    tempDiv.querySelectorAll('*').forEach(el => {
+                        el.removeAttribute('style');
+                        el.removeAttribute('class');
+                        el.removeAttribute('dir');
+                        el.removeAttribute('id');
+                    });
+
+                    // B) "Desenvelopar" (Unwrap) spans que não servem para nada além de quebrar o parser
+                    // Manteremos tags semânticas como <b>, <i>, <strong>, <a> intactas.
+                    tempDiv.querySelectorAll('span, font').forEach(el => {
+                        const fragment = document.createDocumentFragment();
+                        while (el.firstChild) {
+                            fragment.appendChild(el.firstChild);
+                        }
+                        el.parentNode.replaceChild(fragment, el);
+                    });
+
+                    // C) Dividir blocos (p, div) que contêm <br> interno em múltiplos parágrafos.
+                    // Isso resolve o problema de Pergunta e Resposta coladas no mesmo parágrafo.
+                    tempDiv.querySelectorAll('p, div').forEach(block => {
+                        if (block.querySelector('br')) {
+                            const htmlChunks = block.innerHTML.split(/<br\s*\/?>/i);
+                            const fragment = document.createDocumentFragment();
+                            htmlChunks.forEach(chunk => {
+                                const text = chunk.replace(/&nbsp;/g, '').trim();
+                                if (text || chunk.includes('<img')) { // Mantém se tiver texto ou imagem
+                                    const p = document.createElement('p');
+                                    p.innerHTML = chunk;
+                                    fragment.appendChild(p);
+                                }
+                            });
+                            block.parentNode.replaceChild(fragment, block);
+                        }
+                    });
+
+                    // D) Remove parágrafos totalmente vazios (apenas com &nbsp;)
+                    tempDiv.querySelectorAll('p, div, li').forEach(el => {
+                        if (!el.textContent.trim() && !el.querySelector('img')) {
+                            el.remove();
+                        }
+                    });
+
+                    // E) Extrair os blocos limpos (agora apenas blocos de nível raiz como p, ul, ol, h2)
+                    const blocks = Array.from(tempDiv.children);
+
+                    // 2. Extrair os dados semanticamente forçando modo FAQ
+                    const extracted = AccordionV2Module.FAQProcessor.extract(blocks, true);
+                    const faqData = { items: extracted.faqItems };
+                    
+                    if (!faqData.items || faqData.items.length === 0) {
+                        alert("⚠️ Nenhuma pergunta encontrada! Certifique-se de que as perguntas terminam com interrogação (?) ou usam formatação de Título no Word.");
+                        btn.innerText = "🚀 Injetar FAQ no Drupal";
+                        btn.disabled = false;
+                        btn.style.background = "#28a745";
+                        return;
+                    }
+
+                    btn.innerText = `Injetando ${faqData.items.length} itens no Drupal...`;
+
+                    // 2. Injetar na UI do Drupal
+                    await AccordionV2Module.Injector.inject(faqData);
+
+                } catch(e) {
+                    alert("❌ Erro durante a injeção: " + e.message);
+                } finally {
+                    if (document.getElementById('faq-btn-inject')) {
+                        btn.innerText = "🚀 Injetar FAQ no Drupal";
+                        btn.disabled = false;
+                        btn.style.background = "#28a745";
+                    }
+                }
+            };
+        }
+    }
+};
+
+// Auto-inicialização quando colado no Console
+if (typeof window !== 'undefined') {
+    window.AccordionV2Module = AccordionV2Module;
+    // Dispara a interface visual imediatamente!
+    AccordionV2Module.UI.init();
+}
+
+// Se estiver em um ambiente modular, exporta. Do contrário, acopla a window.
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = AccordionV2Module;
+} else {
+    window.AccordionV2Module = AccordionV2Module;
+}
