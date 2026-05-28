@@ -408,7 +408,7 @@
                     /^(?:Ces articles peuvent vous int.ress|Related articles|Verwandte Artikel|Artigos relacionados|Sidebar Blocks?)/i.test(text) ||
                     /^Component\s*:\s*Ces articles/i.test(text) ||
                     // Linha que é EXATAMENTE "Title" ou "URL" — cabeçalho de tabela vazia de artigos relacionados
-                    /^(Title|URL|Titre|Lien)$/.test(text.trim());
+                    (result.chunks.length > 0 && /^(Title|URL|Titre|Lien)$/i.test(text.trim()));
 
                 if (isFooterTrigger) {
                     flushChunk();
@@ -467,7 +467,7 @@
                 // mesmo quando há conteúdo formatado após o marcador na mesma linha)
 
                 // 3.1 Extração de Metadados e H1
-                const mInternalTitle = text.match(/^Internal title\s*:\s*(.+)$/i);
+                const mInternalTitle = text.match(/^(?:Internal title|TITLE)\s*:\s*(.+)$/i);
                 if (mInternalTitle) { result.h1 = mInternalTitle[1].trim(); continue; }
 
                 const mH1 = text.match(/^H1\s*:?\s*(.+)$/i);
@@ -476,20 +476,23 @@
                 // é breadcrumb/navegação e deve ser descartado (não vira conteúdo)
                 if (tag === 'h1') { if (!result.h1) result.h1 = text; continue; }
 
-                const mMetaTitle = text.match(/^(Meta title|Meta-title)\s*:\s*(.+)$/i);
-                if (mMetaTitle) { result.meta.title = mMetaTitle[2].trim(); continue; }
+                // Strip instructions like "(40 and 60 characters)" from the value
+                const cleanMetaValue = (val) => val.replace(/^\([^)]+\)\s*/, '').trim();
+
+                const mMetaTitle = text.match(/^(?:Meta title|Meta-title|Page Title|Title)\s*:\s*(.+)$/i);
+                if (mMetaTitle) { result.meta.title = cleanMetaValue(mMetaTitle[1]); continue; }
                 
-                const mMetaDesc = text.match(/^(Meta description|Meta-description)\s*:\s*(.+)$/i);
-                if (mMetaDesc) { result.meta.description = mMetaDesc[2].trim(); continue; }
+                const mMetaDesc = text.match(/^(?:Meta description|Meta-description)\s*:\s*(.+)$/i);
+                if (mMetaDesc) { result.meta.description = cleanMetaValue(mMetaDesc[1]); continue; }
 
-                const mOgTitle = text.match(/^(OG title|Og title)\s*:\s*(.+)$/i);
-                if (mOgTitle) { result.meta.ogTitle = mOgTitle[2].trim(); continue; }
+                const mOgTitle = text.match(/^(?:OG title|Og title)\s*:\s*(.+)$/i);
+                if (mOgTitle) { result.meta.ogTitle = cleanMetaValue(mOgTitle[1]); continue; }
 
-                const mOgDesc = text.match(/^(OG description|Og description)\s*:\s*(.+)$/i);
-                if (mOgDesc) { result.meta.ogDesc = mOgDesc[2].trim(); continue; }
+                const mOgDesc = text.match(/^(?:OG description|Og description)\s*:\s*(.+)$/i);
+                if (mOgDesc) { result.meta.ogDesc = cleanMetaValue(mOgDesc[1]); continue; }
 
                 // URL: campo explícito OU Source: (formato alternativo de DOCX)
-                const mUrl = text.match(/^(?:URL|Source)\s*:\s*(.+)$/i);
+                const mUrl = text.match(/^(?:URL|Source|Articolo esistente|Existing article)\s*:\s*(.+)$/i);
                 if (mUrl) {
                     let u = mUrl[1].trim();
                     u = u.replace(/^[A-Z]{2}:\s*/, '').replace(/^https?:\/\/[^/]+/, '');
@@ -614,20 +617,11 @@
                 const escapedH1 = Array.from(result.h1).map(c => '.+*?^$()[]{}|\\'.includes(c) ? '\\' + c : c).join('');
                 result.chunks[0] = result.chunks[0].replace(new RegExp(`^(?:<h[1-3][^>]*>\\s*(?:<strong>|<b>)?\\s*|<p(?:[^>]*)>\\s*(?:<strong>|<b>)?\\s*)${escapedH1}(?:\\s*</strong>|</b>)?\\s*(?:</p>|</h[1-3]>)`, 'i'), '').trim();
             }
+
             if (result.chunks.length > 0) {
-                // Post-processing: O PRIMEIRO BLOCO INTEIRO DEVE SER H3 (Requisito do Drupal)
+                // Rotina normal de extração de H1 se ainda necessário
                 const firstChunkDiv = document.createElement('div');
                 firstChunkDiv.innerHTML = result.chunks[0];
-                
-                // Converte todos os parágrafos (<p>) do primeiro bloco em <h3>
-                firstChunkDiv.querySelectorAll('p').forEach(p => {
-                    const h3 = document.createElement('h3');
-                    h3.innerHTML = p.innerHTML.replace(/<\/?(?:strong|b)[^>]*>/gi, '');
-                    p.replaceWith(h3);
-                });
-                result.chunks[0] = firstChunkDiv.innerHTML;
-
-                // Rotina normal de extração de H1 se ainda necessário
                 const firstChunkEls = firstChunkDiv.querySelectorAll('p, h1, h2, h3, h4');
                 
                 if (firstChunkEls.length === 1) {
@@ -659,6 +653,109 @@
                         result.chunks.shift();
                     }
                 }
+            }
+
+            // 3.4 Auto-Distribuição Matemática (Fallback para falta de marcadores)
+            // Se o documento não tinha marcações claras, mas precisamos preencher os 6 blocos do Drupal
+            if (!isImageChunk && result.chunks.length > 0 && result.chunks.length < 6) {
+                const lastChunkHTML = result.chunks.pop(); // Tira o bloco gigante para ser fatiado
+                const div = document.createElement('div');
+                div.innerHTML = lastChunkHTML;
+                const nodes = Array.from(div.children);
+
+                let seenItems = 0;
+                let countTag = 'H';
+                const headingCount = nodes.filter(n => /^h[2-6]$/i.test(n.tagName)).length;
+                let itemsPerBlock = Math.max(1, Math.ceil(headingCount / 4));
+
+                if (headingCount < 2) {
+                    countTag = 'P';
+                    const pCount = nodes.filter(n => n.tagName === 'P').length;
+                    itemsPerBlock = Math.max(1, Math.ceil(pCount / 4));
+                }
+
+                let currentNewChunks = [];
+                let currentNodes = [];
+
+                // Remove (H1)-(H6) labels before distributing
+                for (let i = 0; i < nodes.length; i++) {
+                    const node = nodes[i];
+                    node.innerHTML = node.innerHTML?.replace(/\s*\([Hh][1-6]\)\s*/g, '') || '';
+                    if (node.nodeType === 3) node.textContent = node.textContent.replace(/\s*\([Hh][1-6]\)\s*/g, '');
+                }
+
+                for (let i = 0; i < nodes.length; i++) {
+                    const node = nodes[i];
+                    const absoluteIndex = result.chunks.length + currentNewChunks.length;
+                    
+                    // O padrão da página é "Text, Text, Image, Text, Image, Text" nos editores do CMS.
+                    // Porém, o Chunk 0 (Intro) NÃO vai para os CKEditors. 
+                    // Isso significa que os editores começam a receber a partir do Chunk 1.
+                    // editors[0] = Chunk 1 (Text)
+                    // editors[1] = Chunk 2 (Text)
+                    // editors[2] = Chunk 3 (Image+Text)
+                    // editors[3] = Chunk 4 (Text)
+                    // editors[4] = Chunk 5 (Image+Text)
+                    // editors[5] = Chunk 6 (Text)
+                    // Portanto, os blocos Image DEVEM ser Chunk 3 e Chunk 5. O total de chunks será 7.
+                    
+                    const isImageChunkNow = absoluteIndex === 3 || absoluteIndex === 5;
+                    const nextIsImageChunk = (absoluteIndex + 1) === 3 || (absoluteIndex + 1) === 5;
+
+                    // Verifica se o texto do nó é uma sentença completa (termina com pontuação final)
+                    const textContent = node.textContent.trim();
+                    const isFullSentence = /[.!?:]$/.test(textContent) && textContent.length > 20;
+
+                    // Se estamos construindo um Image chunk agora (que deve ser exatamente 1 parágrafo completo)
+                    if (isImageChunkNow && node.tagName === 'P' && isFullSentence) {
+                        if (currentNodes.length > 0) {
+                            // Nós excedentes vão pro Text chunk anterior
+                            if (absoluteIndex === 1) {
+                                result.chunks[result.chunks.length - 1] += currentNodes.map(n => n.outerHTML).join('');
+                            } else {
+                                currentNewChunks[currentNewChunks.length - 1] += currentNodes.map(n => n.outerHTML).join('');
+                            }
+                            currentNodes = [];
+                        }
+                        currentNewChunks.push(node.outerHTML);
+                        seenItems = 0; 
+                        continue;
+                    }
+
+                    // Se estamos num Text chunk, precisamos saber quando fechar o chunk atual:
+                    if (seenItems >= itemsPerBlock) {
+                        if (nextIsImageChunk && node.tagName === 'P' && isFullSentence) {
+                            if (currentNodes.length > 0) {
+                                currentNewChunks.push(currentNodes.map(n => n.outerHTML).join(''));
+                                currentNodes = [];
+                            }
+                            currentNewChunks.push(node.outerHTML);
+                            seenItems = 0;
+                            continue;
+                        } else if (!nextIsImageChunk && absoluteIndex < 6 && (node.tagName === 'P' || /^h[2-6]$/i.test(node.tagName))) {
+                            // Se o próximo é Text, fechamos o Text atual
+                            if (currentNodes.length > 0) {
+                                currentNewChunks.push(currentNodes.map(n => n.outerHTML).join(''));
+                                currentNodes = [];
+                            }
+                            currentNodes.push(node);
+                            seenItems = /^h[2-6]$/i.test(node.tagName) ? 1 : 0;
+                            continue;
+                        }
+                    }
+
+                    currentNodes.push(node);
+                    
+                    if (countTag === 'H' && /^h[2-6]$/i.test(node.tagName)) seenItems++;
+                    if (countTag === 'P' && node.tagName === 'P') seenItems++;
+                }
+
+                // Push do que sobrou para o último Text component (posição 5)
+                if (currentNodes.length > 0) {
+                    currentNewChunks.push(currentNodes.map(n => n.outerHTML).join(''));
+                }
+                
+                result.chunks.push(...currentNewChunks);
             }
 
             if (!result.meta.title) result.meta.title = result.meta.ogTitle || result.h1;
